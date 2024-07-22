@@ -1,67 +1,106 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.widgets import Button
 
 class SpatialNeuron:
-    def __init__(self, position):
-        self.position = np.array(position)
-        self.connections = []
+    def __init__(self, input_dim, output_dim):
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.weights = np.random.randn(input_dim, output_dim)
+        self.bias = np.random.randn(output_dim)
+        self.position = np.random.randn(input_dim + output_dim)
+        
+    def forward(self, x):
+        z = np.dot(x, self.weights) + self.bias
+        # Calculate distances
+        input_distances = np.linalg.norm(self.position[:self.input_dim] - x, axis=0)
+        output_distances = np.linalg.norm(self.position[self.input_dim:] - z, axis=0)
+        # Apply activation with distance modulation
+        a = self.sigmoid(z) * (1 / (1 + input_distances.mean())) * (1 / (1 + output_distances.mean()))
+        return a, z, input_distances, output_distances
+    
+    def sigmoid(self, x):
+        return 1 / (1 + np.exp(-x))
+    
+    def sigmoid_derivative(self, x):
+        return x * (1 - x)
 
 class SpatialNetwork:
-    def __init__(self, num_neurons, input_dim=2):
-        self.neurons = [SpatialNeuron(np.random.rand(input_dim)) for _ in range(num_neurons)]
-        self.connect_neurons(3)  # Connect each neuron to its 3 nearest neighbors
+    def __init__(self):
+        self.neuron = SpatialNeuron(2, 2)
+        self.learning_rate = 0.1
+        self.position_learning_rate = 0.01
+        self.dataset = np.array([
+            [[0, 0], [0, 0]],
+            [[0, 1], [1, 0]],
+            [[1, 0], [1, 0]],
+            [[1, 1], [0, 1]]
+        ])
+        self.current_iteration = 0
+        
+    def train_step(self):
+        x, y_true = self.dataset[self.current_iteration % 4]
+        y_pred, z, input_distances, output_distances = self.neuron.forward(x)
+        
+        # Compute gradients
+        d_loss = y_pred - y_true
+        d_sigmoid = self.neuron.sigmoid_derivative(y_pred)
+        d_weights = np.outer(x, d_loss * d_sigmoid)
+        d_bias = d_loss * d_sigmoid
+        
+        # Update weights and bias
+        self.neuron.weights -= self.learning_rate * d_weights
+        self.neuron.bias -= self.learning_rate * d_bias
+        
+        # Update neuron position
+        d_position_input = -d_loss * d_sigmoid * y_pred * (x - self.neuron.position[:2]) / (1 + input_distances)**3
+        d_position_output = -d_loss * d_sigmoid * y_pred * (z - self.neuron.position[2:]) / (1 + output_distances)**3
+        self.neuron.position[:2] -= self.position_learning_rate * d_position_input
+        self.neuron.position[2:] -= self.position_learning_rate * d_position_output
+        
+        self.current_iteration += 1
+        
+        print(f"Iteration {self.current_iteration}: Input {x} -> Predicted {y_pred.round(2)} (True {y_true})")
+        return x, y_true, y_pred, input_distances, output_distances
 
-    def connect_neurons(self, k):
-        for i, neuron in enumerate(self.neurons):
-            distances = [np.linalg.norm(neuron.position - other.position) for other in self.neurons]
-            nearest = np.argsort(distances)[1:k+1]  # Exclude self
-            neuron.connections = [(j, 1/distances[j]) for j in nearest]
+# Visualization setup
+fig, ax = plt.subplots(figsize=(10, 8))
+plt.subplots_adjust(bottom=0.2)
+network = SpatialNetwork()
 
-    def activate(self, input_point):
-        input_point = np.array(input_point)
-        for neuron in self.neurons:
-            distance = np.linalg.norm(neuron.position - input_point)
-            activation = 1 / (1 + distance)  # Simple activation function
-            
-            # Move neuron towards input point
-            neuron.position += 0.1 * activation * (input_point - neuron.position)
-            
-            # Apply pull from connected neurons
-            for connected, strength in neuron.connections:
-                pull = self.neurons[connected].position - neuron.position
-                neuron.position += 0.01 * strength * pull
+scatter = ax.scatter([], [], c='r', s=100)
+input_lines = [ax.plot([], [], 'b-')[0] for _ in range(2)]
+output_lines = [ax.plot([], [], 'g-')[0] for _ in range(2)]
+input_text = ax.text(0.05, 0.95, '', transform=ax.transAxes, verticalalignment='top')
+output_text = ax.text(0.05, 0.85, '', transform=ax.transAxes, verticalalignment='top')
+weight_text = ax.text(0.05, 0.75, '', transform=ax.transAxes, verticalalignment='top')
+distance_text = ax.text(0.05, 0.55, '', transform=ax.transAxes, verticalalignment='top')
 
-        # Return sum of activations as output
-        return sum(1 / (1 + np.linalg.norm(n.position - input_point)) for n in self.neurons)
+def update_plot(x, y_true, y_pred, input_distances, output_distances):
+    neuron_pos = network.neuron.position
+    scatter.set_offsets(neuron_pos.reshape(1, -1))
+    
+    for i, line in enumerate(input_lines):
+        line.set_data([x[i], neuron_pos[i]], [0, 1])
+    
+    for i, line in enumerate(output_lines):
+        line.set_data([neuron_pos[i+2], y_pred[i]], [1, 2])
+    
+    input_text.set_text(f"Input: {x}")
+    output_text.set_text(f"Output: Predicted {y_pred.round(2)}, True {y_true}")
+    weight_text.set_text(f"Weights:\n{network.neuron.weights.round(2)}\nBias: {network.neuron.bias.round(2)}")
+    distance_text.set_text(f"Distances:\nInput: {input_distances.round(2)}\nOutput: {output_distances.round(2)}")
+    
+    ax.relim()
+    ax.autoscale_view()
+    plt.draw()
 
-    def visualize(self, ax):
-        positions = np.array([n.position for n in self.neurons])
-        ax.scatter(positions[:, 0], positions[:, 1], c='blue')
-        for neuron in self.neurons:
-            for connected, _ in neuron.connections:
-                con_pos = self.neurons[connected].position
-                ax.plot([neuron.position[0], con_pos[0]], 
-                        [neuron.position[1], con_pos[1]], 'k-', alpha=0.2)
+def on_click(event):
+    x, y_true, y_pred, input_distances, output_distances = network.train_step()
+    update_plot(x, y_true, y_pred, input_distances, output_distances)
 
-# Example usage
-network = SpatialNetwork(20)
-
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-
-network.visualize(ax1)
-ax1.set_title("Before Training")
-
-# Training
-for _ in range(100):
-    input_point = np.random.rand(2)
-    network.activate(input_point)
-
-network.visualize(ax2)
-ax2.set_title("After Training")
+button_ax = plt.axes([0.8, 0.05, 0.1, 0.075])
+button = Button(button_ax, 'Next')
+button.on_clicked(on_click)
 
 plt.show()
-
-# Test the network
-test_input = [0.5, 0.5]
-output = network.activate(test_input)
-print(f"Network output for input {test_input}: {output}")

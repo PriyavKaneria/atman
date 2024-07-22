@@ -100,7 +100,26 @@ def on_click(event):
     update_plot(x, y_true, y_pred, input_distances, output_distances)
 
 button_ax = plt.axes([0.8, 0.05, 0.1, 0.075])
-button = Button(button_ax, 'Next')
-button.on_clicked(on_click)
+nxt_button = Button(button_ax, 'Next')
+nxt_button.on_clicked(on_click)
+
+# play pause training with 100ms interval
+play_button = Button(plt.axes([0.7, 0.05, 0.1, 0.075]), 'Play')
+pause_button = Button(plt.axes([0.6, 0.05, 0.1, 0.075]), 'Pause')
+pause = False
+
+def on_play(event):
+    global pause
+    pause = False
+    while not pause:
+        on_click(None)
+        plt.pause(0.1)
+        
+def on_pause(event):
+    global pause
+    pause = True
+
+play_button.on_clicked(on_play)
+pause_button.on_clicked(on_pause)
 
 plt.show()

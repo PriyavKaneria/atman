@@ -2,27 +2,28 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 
-from solve_distance_to_position import find_new_coordinates
-
 class SpatialNeuron:
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim, dmin=0.5):
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.weights = np.random.randn(input_dim, output_dim)
         self.bias = np.random.randn(1)
         self.position = np.array([1,0.5])  # 2D position for visualization
+        self.dmin = dmin  # minimum distance for spatial attention
         
     def forward(self, x):
         z = np.dot(x, self.weights) + self.bias
         input_distances = np.array([
-            np.linalg.norm(self.position - np.array([0, 0])),  # d1
-            np.linalg.norm(self.position - np.array([0, 1])),  # d2
+            max(np.linalg.norm(self.position - np.array([0, 0])), self.dmin),  # d1
+            max(np.linalg.norm(self.position - np.array([0, 1])), self.dmin),  # d2
         ])
         output_distances = np.array([
-            np.linalg.norm(self.position - np.array([2, 0])),  # d3
-            np.linalg.norm(self.position - np.array([2, 1]))   # d4
+            max(np.linalg.norm(self.position - np.array([2, 0])), self.dmin),  # d3
+            max(np.linalg.norm(self.position - np.array([2, 1])), self.dmin)   # d4
         ])
-        a = self.sigmoid(z) * (1 / (1 + output_distances))
+        a = self.sigmoid(z)
+        # add spatial attention
+        a *= (1 / (1 + output_distances)) * 1
         return a, z, input_distances, output_distances
     
     def sigmoid(self, x):
@@ -34,8 +35,8 @@ class SpatialNeuron:
 class SpatialNetwork:
     def __init__(self):
         self.neuron = SpatialNeuron(2, 2)
-        self.learning_rate = 0.5
-        self.position_learning_rate = 0.2
+        self.learning_rate = 0.8
+        self.position_learning_rate = 0.8
         self.dataset = np.array([
             # [[0, 0], [0, 0]],
             # [[0, 1], [1, 0]],
@@ -53,14 +54,17 @@ class SpatialNetwork:
         total_loss = 0
         total_correct = 0
         gradients = {'weights': np.zeros_like(self.neuron.weights),
-                     'bias': np.zeros_like(self.neuron.bias),
-                     'position': np.zeros_like(self.neuron.position)}
+                    'bias': np.zeros_like(self.neuron.bias),
+                    'position': np.zeros_like(self.neuron.position)}
         
         for x, y_true in self.dataset:
             y_pred, z, inp_distances, out_distances = self.neuron.forward(x)
             
             # Compute loss and accuracy
-            loss = np.mean((y_pred - y_true) ** 2)
+            prediction_loss = np.mean((y_pred - y_true) ** 2)
+            distance_penalty = np.sum(np.maximum(0, self.neuron.dmin - out_distances))
+            # print(distance_penalty)
+            loss = prediction_loss + .5 * distance_penalty  # You can adjust the 0.1 factor to control the penalty strength
             total_loss += loss
             total_correct += np.all(np.round(y_pred) == y_true)
             
@@ -75,26 +79,23 @@ class SpatialNetwork:
             
             # Gradient for position
             d_position = np.zeros(2)
-            
-            # compute the gradient for the distance from output nodes
-            # delta d3
-            delta_s1 = -np.sum(d_loss * d_sigmoid * y_pred) * (np.array([2,0]) - self.neuron.position) / (1 + out_distances[0])**3
-            s1_prime = out_distances[0] + delta_s1
+            for i, pos in enumerate([(0,0), (0,1), (2,0), (2,1)]):
+                distance = np.linalg.norm(self.neuron.position - np.array(pos))
+                if distance < self.neuron.dmin:
+                    d_vector = -0.001 * (np.array(pos) - self.neuron.position) / distance  # Repulsive force
+                else:
+                    if i < 2:  # Input distances
+                        d_vector = np.zeros(2)  # No gradient for input distances
+                    else:  # Output distances
+                        d_vector = -(d_loss[i-2] * d_sigmoid[i-2] * y_pred[i-2]) * (np.array(pos) - self.neuron.position) / (1 + out_distances[i-2])**3
+                d_position += d_vector
 
-            # delta d4
-            delta_s2 = -np.sum(d_loss * d_sigmoid * y_pred) * (np.array([2,1]) - self.neuron.position) / (1 + out_distances[1])**3
-            s2_prime = out_distances[1] + delta_s2
-
-            # compute the updated position based on the new distances (s1_prime, s2_prime)
-            new_positions = find_new_coordinates(2, 0, s1_prime, 2, 1, s2_prime)
-            # get the closest position to the current position
-            pos = new_positions[np.argmin([np.linalg.norm(self.neuron.position - np.array(p)) for p in new_positions])]
-            gradients['position'] = pos - self.neuron.position
+            gradients['position'] += d_position
         
         # Update weights, bias, and position
         self.neuron.weights -= self.learning_rate * gradients['weights'] / len(self.dataset)
         self.neuron.bias -= self.learning_rate * gradients['bias'] / len(self.dataset)
-        self.neuron.position -= self.position_learning_rate * gradients['position'] / len(self.dataset)
+        self.neuron.position += self.position_learning_rate * gradients['position'] / len(self.dataset)
         
         accuracy = total_correct / len(self.dataset)
         self.loss_history.append(total_loss / len(self.dataset))
@@ -204,7 +205,7 @@ def on_play(event):
     pause = False
     while not pause:
         on_click(None)
-        plt.pause(0.05)
+        plt.pause(0.01)
         
 def on_pause(event):
     global pause

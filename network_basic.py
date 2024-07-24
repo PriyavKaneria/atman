@@ -24,12 +24,12 @@ class SpatialNeuron:
 
         
     def forward(self, inputs):
-        if self.is_input:
-            return inputs[0]
-        print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
-        print(inputs.shape, self.weights.shape)
+        # print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
         z = np.dot(inputs, self.weights) + self.bias
         a = self.sigmoid(z)
+        # output nodes don't have spatial attention
+        if self.is_output:
+            return a
         # distance attention
         output_distances = [np.linalg.norm(self.position - conn.position) for conn in self.outgoing_connections]
         output_distances = np.array(output_distances).reshape(-1, 1)
@@ -57,8 +57,9 @@ class SpatialNetwork:
             self.neurons[i].is_hidden = True
         
         self.initialize_connections()
-        self.activations = {}
-        self.learning_rate = 0.1
+        # activations is a matrix representing activation value sent from ith neuron to jth neuron
+        self.activations = np.zeros((len(self.neurons), len(self.neurons)))
+        self.learning_rate = 0.8
         self.position_learning_rate = 0.1
         self.current_iteration = 0
         self.loss_history = []
@@ -87,28 +88,41 @@ class SpatialNetwork:
         for i in self.hidden_indices + self.output_indices:
             self.neurons[i].initialize_weights()
     
-    def forward(self, x):
-        self.activations = {i: -1 for i in range(len(self.neurons))}
-        for i, inp in zip(self.input_indices, x):
-            self.activations[i] = inp
+    def forward(self, inputs):
+        # reset activations, default value is -1
+        self.activations.fill(-1)
         
-        for i in self.hidden_indices + self.output_indices:
-            # print("Forwarding neuron", i)
+        # set the activations for all hidden neurons connected to the input neurons
+        for index, inp_node_index in enumerate(self.input_indices):
+            for conn in self.neurons[inp_node_index].outgoing_connections:
+                self.activations[inp_node_index][conn.index] = inputs[index]
+        
+        # this is a directed acyclic graph
+        # there can be outgoing connections that are dependent on unknown activations
+        # so we can do a recursion from the output nodes instead
 
-            # we get the inputs from all the incoming connections, and forward them to the neuron
-            # this results with output activations that is an array of all activations for the outgoing connections
-            output_activations = self.neurons[i].forward(np.array([self.activations[conn.index] for conn in self.neurons[i].incoming_connections]))
-            
-            # we set the activations of the outgoing connections to the output activations
-            for j, conn in enumerate(self.neurons[i].outgoing_connections):
-                self.activations[conn.index] = output_activations[j]
-            
-            # we set the activations of the current neuron to the output activations
-            if self.activations[i] == -1:
-                self.activations[i] = output_activations
-            
+        def activate_neuron(i):
+            neuron = self.neurons[i]
+            inputs = np.array([self.activations[conn.index][i] for conn in neuron.incoming_connections])
+            if not np.all(inputs != -1):
+                # if not all incoming connections are activated
+                # recursively activate the incoming connections
+                for conn in neuron.incoming_connections:
+                    if self.activations[conn.index][i] == -1:
+                        activate_neuron(conn.index)
 
-        return [self.activations[i] for i in self.output_indices]
+            # if the code reaches here, all the incoming connections are activated
+            # forward the neuron, save the activation value and return it
+            # if the neuron is an output node, return the forwarded output
+            if neuron.is_output:
+                return neuron.forward(inputs)
+            output_activations = neuron.forward(inputs)
+            for idx, conn in enumerate(neuron.outgoing_connections):
+                # set the activation value for the outgoing connections
+                self.activations[i][conn.index] = output_activations[idx][0]
+
+        # return the activations of the output nodes
+        return [activate_neuron(i) for i in self.output_indices]
     
     def backward(self, x, y_true, y_pred):
         gradients = {i: {'weights': np.zeros_like(n.weights) if n.weights is not None else 0, 
@@ -126,23 +140,26 @@ class SpatialNetwork:
         
         def compute_gradient(i):
             neuron = self.neurons[i]
-            print("Computing gradient for neuron", neuron.position, " i", i)
+            # print("Computing gradient for neuron", neuron.position, " i", i)
             if i in output_deltas:
+                # print("got value from output deltas")
                 delta = output_deltas[i]
             else:
-                delta = 0
-                for j, conn in enumerate(neuron.outgoing_connections):
+                delta = [0]
+                for conn in neuron.outgoing_connections:
                     weight_index = conn.incoming_connections.index(neuron)
                     out_delta = compute_gradient(conn.index) # a^(l-1)
+                    # print("Out delta", out_delta)
                     delta += conn.weights[weight_index] * out_delta # w^(l) * a^(l-1)
-                print("it's activations ", self.activations[i])
-                delta *= neuron.sigmoid_derivative(self.activations[i]) # w^(l) * a^(l-1) * f'(z^(l))
+                for activation in self.activations[:, i]:
+                    if activation != -1:
+                        delta = delta * np.array(neuron.sigmoid_derivative(activation)) # w^(l) * a^(l-1) * f'(z^(l))
             
-            print("Delta", delta)
+            # print("Delta", delta)
             if not neuron.is_input:
                 gradients[i]['bias'] = delta
-                print([self.activations[n.index] for n in neuron.incoming_connections])
-                gradients[i]['weights'] = delta * [self.activations[n.index] for n in neuron.incoming_connections]
+                # print([self.activations[n.index][i] for n in neuron.incoming_connections])
+                gradients[i]['weights'] = np.array([self.activations[n.index][i] for n in neuron.incoming_connections]) * delta
                 
                 # Position gradient calculation remains the same
                 # for j, conn in enumerate(neuron.incoming_connections):
@@ -173,8 +190,8 @@ class SpatialNetwork:
         
         for x, y_true in dataset_step:
             y_pred = self.forward(x)
-            print("Predicted", y_pred)
-            print(self.activations)
+            # print("Predicted", y_pred)
+            # print(self.activations)
             single_row_gradients = self.backward(x, y_true, y_pred)
             for i, grad in single_row_gradients.items():
                 for key in grad:
@@ -182,12 +199,16 @@ class SpatialNetwork:
 
             # Compute loss and accuracy
             prediction_loss = np.mean((y_pred - y_true) ** 2)
-            print("Prediction loss", prediction_loss)
+            # print("Prediction loss", prediction_loss)
             loss = prediction_loss
             total_loss += loss
             total_correct += np.all(np.round(y_pred) == y_true)
 
-        print("Gradients", gradients[2])
+        # Average gradients
+        for i in gradients:
+            for key in gradients[i]:
+                gradients[i][key] = gradients[i][key] / len(dataset_step)
+        print("Gradients", gradients[2]['weights'])
         
         for i, neuron in enumerate(self.neurons):
             if not neuron.is_input:

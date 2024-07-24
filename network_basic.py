@@ -1,194 +1,234 @@
+from typing import List
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
+from scipy.spatial import distance_matrix
 
 class SpatialNeuron:
-    def __init__(self, input_dim, output_dim, dmin=0.5):
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.weights = np.random.randn(input_dim, output_dim)
+    def __init__(self, position, num_connections=3):
+        self.position = np.array(position)
+        self.num_connections = num_connections
+        self.weights = None
         self.bias = np.random.randn(1)
-        self.position = np.array([1,0.5])  # 2D position for visualization
-        self.dmin = dmin  # minimum distance for spatial attention
+        self.outgoing_connections : List[SpatialNeuron] = []
+        self.incoming_connections : List[SpatialNeuron] = []
+        self.is_input = False
+        self.is_output = False
         
-    def forward(self, x):
-        z = np.dot(x, self.weights) + self.bias
-        input_distances = np.array([
-            max(np.linalg.norm(self.position - np.array([0, 0])), self.dmin),  # d1
-            max(np.linalg.norm(self.position - np.array([0, 1])), self.dmin),  # d2
-        ])
-        output_distances = np.array([
-            max(np.linalg.norm(self.position - np.array([2, 0])), self.dmin),  # d3
-            max(np.linalg.norm(self.position - np.array([2, 1])), self.dmin)   # d4
-        ])
+    def initialize_weights(self):
+        self.weights = np.random.randn(len(self.incoming_connections), 1)
+
+        
+    def forward(self, inputs):
+        if self.is_input:
+            return inputs[0]
+        # print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
+        z = np.dot(inputs, self.weights) + self.bias
         a = self.sigmoid(z)
-        # add spatial attention
-        a *= (1 / (1 + output_distances)) * 1
-        return a, z, input_distances, output_distances
+        return a[0]
     
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
     
     def sigmoid_derivative(self, x):
-        return x * (1 - x)
+        return self.sigmoid(x) * (1 - self.sigmoid(x))
 
 class SpatialNetwork:
-    def __init__(self):
-        self.neuron = SpatialNeuron(2, 2)
-        self.learning_rate = 0.8
-        self.position_learning_rate = 0.8
-        self.dataset = np.array([
-            # [[0, 0], [0, 0]],
-            # [[0, 1], [1, 0]],
-            # [[1, 0], [1, 0]],
-            # [[1, 1], [0, 1]]
-            [[0, 0], [1, 0]],
-            [[0, 1], [1, 0]],
-            [[1, 0], [1, 0]],
-            [[1, 1], [1, 0]]
-        ])
+    def __init__(self, node_positions, input_indices, output_indices):
+        self.neurons = [SpatialNeuron(pos) for pos in node_positions]
+        self.input_indices = input_indices
+        self.output_indices = output_indices
+        self.hidden_indices = [i for i in range(len(self.neurons)) if i not in input_indices and i not in output_indices]
+        
+        for i in input_indices:
+            self.neurons[i].is_input = True
+        for i in output_indices:
+            self.neurons[i].is_output = True
+        
+        self.initialize_connections()
+        self.activations = {}
+        self.learning_rate = 0.1
+        self.position_learning_rate = 0.01
         self.current_iteration = 0
         self.loss_history = []
         
-    def train_step(self):
-        total_loss = 0
-        total_correct = 0
-        gradients = {'weights': np.zeros_like(self.neuron.weights),
-                    'bias': np.zeros_like(self.neuron.bias),
-                    'position': np.zeros_like(self.neuron.position)}
+    def initialize_connections(self):
+        distances = distance_matrix([n.position for n in self.neurons], [n.position for n in self.neurons])
         
-        for x, y_true in self.dataset:
-            y_pred, z, inp_distances, out_distances = self.neuron.forward(x)
+        # Connect input nodes to nearest hidden nodes
+        for i in self.input_indices:
+            nearest_hidden = sorted(self.hidden_indices, key=lambda j: distances[i][j])[:self.neurons[i].num_connections]
+            self.neurons[i].outgoing_connections = [self.neurons[j] for j in nearest_hidden]
+            for j in nearest_hidden:
+                self.neurons[j].incoming_connections.append(self.neurons[i])
+        
+        # Connect hidden nodes to nearest hidden or output nodes
+        for i in self.hidden_indices:
+            valid_targets = self.hidden_indices + self.output_indices
+            valid_targets.remove(i)  # Exclude self-connection
+            nearest = sorted(valid_targets, key=lambda j: distances[i][j])[:self.neurons[i].num_connections]
+            self.neurons[i].outgoing_connections = [self.neurons[j] for j in nearest]
+            for j in nearest:
+                # if not self.neurons[j].is_output:
+                self.neurons[j].incoming_connections.append(self.neurons[i])
+        
+        # Initialize weights for hidden and output nodes
+        for i in self.hidden_indices + self.output_indices:
+            self.neurons[i].initialize_weights()
+    
+    def forward(self, x):
+        self.activations = {i: -1 for i in range(len(self.neurons))}
+        for i, inp in zip(self.input_indices, x):
+            self.activations[i] = inp
+        
+        def activate_neuron(i):
+            if self.activations[i] != -1:
+                return self.activations[i]
+            neuron = self.neurons[i]
+            inputs = np.array([activate_neuron(self.neurons.index(conn)) for conn in neuron.incoming_connections])
+            self.activations[i] = neuron.forward(inputs)
+            return self.activations[i]
+        
+        return [activate_neuron(i) for i in self.output_indices]
+    
+    def backward(self, x, y_true, y_pred):
+        gradients = {i: {'weights': np.zeros_like(n.weights) if n.weights is not None else None, 
+                         'bias': 0,
+                         'position': np.zeros_like(n.position)} 
+                     for i, n in enumerate(self.neurons)}
+        
+        # Compute output gradients
+        output_deltas = {}
+        for i, (true, pred) in enumerate(zip(y_true, y_pred)):
+            output_index = self.output_indices[i]
+            output_deltas[output_index] = (pred - true) * self.neurons[output_index].sigmoid_derivative(pred)
+        
+        def compute_gradient(i):
+            neuron = self.neurons[i]
+            if i in output_deltas:
+                delta = output_deltas[i]
+            else:
+                delta = 0
+                for j, conn in enumerate(neuron.outgoing_connections):
+                    out_index = self.neurons.index(conn)
+                    weight_index = conn.incoming_connections.index(neuron)
+                    out_delta = compute_gradient(out_index)
+                    delta += conn.weights[weight_index, 0] * out_delta
+                
+                delta *= neuron.sigmoid_derivative(self.activations[i])
             
-            # Compute loss and accuracy
-            prediction_loss = np.mean((y_pred - y_true) ** 2)
-            distance_penalty = np.sum(np.maximum(0, self.neuron.dmin - out_distances))
-            # print(distance_penalty)
-            loss = prediction_loss + .5 * distance_penalty  # You can adjust the 0.1 factor to control the penalty strength
-            total_loss += loss
-            total_correct += np.all(np.round(y_pred) == y_true)
+            if not neuron.is_input:
+                gradients[i]['bias'] = delta
+                gradients[i]['weights'] = delta * np.array([self.activations[self.neurons.index(n)] for n in neuron.incoming_connections]).reshape(-1, 1)
+                
+                # Position gradient calculation remains the same
+                for j, conn in enumerate(neuron.incoming_connections):
+                    d_vector = (conn.position - neuron.position) / np.linalg.norm(conn.position - neuron.position)
+                    gradients[i]['position'] = np.add(gradients[i]['position'], delta * neuron.weights[j] * d_vector, out=gradients[i]['position'], casting='unsafe')
             
-            # Compute gradients
-            d_loss = y_pred - y_true
-            d_sigmoid = self.neuron.sigmoid_derivative(y_pred)
-            d_weights = np.outer(x, d_loss * d_sigmoid)
-            d_bias = np.average(d_loss * d_sigmoid)
-            
-            gradients['weights'] += d_weights
-            gradients['bias'] += d_bias
-            
-            # Gradient for position
-            d_position = np.zeros(2)
-            for i, pos in enumerate([(0,0), (0,1), (2,0), (2,1)]):
-                distance = np.linalg.norm(self.neuron.position - np.array(pos))
-                if distance < self.neuron.dmin:
-                    d_vector = -0.001 * (np.array(pos) - self.neuron.position) / distance  # Repulsive force
-                else:
-                    if i < 2:  # Input distances
-                        d_vector = np.zeros(2)  # No gradient for input distances
-                    else:  # Output distances
-                        d_vector = -(d_loss[i-2] * d_sigmoid[i-2] * y_pred[i-2]) * (np.array(pos) - self.neuron.position) / (1 + out_distances[i-2])**3
-                d_position += d_vector
+            return delta
+        
+        for i in reversed(range(len(self.neurons))):
+            if not self.neurons[i].is_input:
+                compute_gradient(i)
+        
+        return gradients
 
-            gradients['position'] += d_position
+    def train_step(self, x, y_true):
+        y_pred = self.forward(x)
+        gradients = self.backward(x, y_true, y_pred)
         
-        # Update weights, bias, and position
-        self.neuron.weights -= self.learning_rate * gradients['weights'] / len(self.dataset)
-        self.neuron.bias -= self.learning_rate * gradients['bias'] / len(self.dataset)
-        self.neuron.position += self.position_learning_rate * gradients['position'] / len(self.dataset)
+        for i, neuron in enumerate(self.neurons):
+            if not neuron.is_input:
+                neuron.weights -= self.learning_rate * gradients[i]['weights']
+                neuron.bias -= self.learning_rate * gradients[i]['bias']
+            neuron.position = np.add(neuron.position, self.position_learning_rate * gradients[i]['position'], out=neuron.position, casting='unsafe')
         
-        accuracy = total_correct / len(self.dataset)
-        self.loss_history.append(total_loss / len(self.dataset))
+        loss = np.mean((np.array(y_pred) - np.array(y_true)) ** 2)
+        accuracy = np.mean(np.round(y_pred) == y_true)
+        self.loss_history.append(loss)
         self.current_iteration += 1
         
-        print(f"Iteration {self.current_iteration}: Loss {total_loss/len(self.dataset):.4f}, Accuracy {accuracy:.2f}")
-        return accuracy
+        print(f"Iteration {self.current_iteration}: Loss {loss:.4f}, Accuracy {accuracy:.2f}")
+        return loss
+
+
 
 # Visualization setup
-fig: plt.Figure
+fig: plt.figure
 ax1: plt.Axes
 ax2: plt.Axes
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
 plt.subplots_adjust(bottom=0.2)
-network = SpatialNetwork()
+
+# Example usage
+node_positions = [(0, 0), (0, 1), (1, 0.5), (2, 0), (2, 1)]
+input_indices = [0, 1]
+output_indices = [3, 4]
+network = SpatialNetwork(node_positions, input_indices, output_indices)
 
 # Main plot
-input_nodes = ax1.scatter([0, 0], [0, 1], c='orange', s=500, zorder=2)
-output_nodes = ax1.scatter([2, 2], [0, 1], c='orange', s=500, zorder=2)
-neuron = ax1.scatter([1], [0.5], c='black', s=500, zorder=3)
-lines = [
-    ax1.plot([0,1], [0,0.5], 'gray', linewidth=2, zorder=1)[0],
-    ax1.plot([0,1], [1,0.5], 'gray', linewidth=2, zorder=1)[0],
-    ax1.plot([1,2], [0.5,1], 'gray', linewidth=2, zorder=1)[0],
-    ax1.plot([1,2], [0.5,0], 'gray', linewidth=2, zorder=1)[0]
-]
+ax1.scatter([p[0] for p in node_positions], [p[1] for p in node_positions], c='orange', s=500, zorder=2)
+lines = []
+for neuron in network.neurons:
+    for conn in neuron.outgoing_connections:
+        line, = ax1.plot([neuron.position[0], conn.position[0]], 
+                         [neuron.position[1], conn.position[1]], 
+                         'gray', linewidth=1, zorder=1)
+        # add_arrow(line)
+        lines.append(line)
 
 ax1.set_xlim(-0.5, 2.5)
 ax1.set_ylim(-0.5, 1.5)
 ax1.axis('off')
 
-# Text annotations
-texts = {
-    'a1': ax1.text(-0.1, 0, '', ha='right', va='center'),
-    'a2': ax1.text(-0.1, 1, '', ha='right', va='center'),
-    'a3': ax1.text(2.1, 0, '', ha='left', va='center'),
-    'a4': ax1.text(2.1, 1, '', ha='left', va='center'),
-    'd1': ax1.text(0.5, 0.1, '', ha='center', va='bottom'),
-    'd2': ax1.text(0.5, 0.9, '', ha='center', va='bottom'),
-    'd3': ax1.text(1.5, 0.1, '', ha='center', va='bottom'),
-    'd4': ax1.text(1.5, 0.9, '', ha='center', va='bottom'),
-    'w1': ax1.text(0.5, 0.3, '', ha='right', va='bottom'),
-    'w2': ax1.text(0.5, 0.7, '', ha='right', va='top'),
-    'w3': ax1.text(1.5, 0.3, '', ha='left', va='bottom'),
-    'w4': ax1.text(1.5, 0.7, '', ha='left', va='top'),
-    'b1': ax1.text(1, 0.7, '', ha='center', va='center'),
-}
-
 # Loss plot
 loss_line, = ax2.plot([], [], 'b-')
-loss_text = ax2.text(0.02, 0.95, '', transform=ax2.transAxes)
-ax2.set_xlim(0, 500)
+ax2.set_xlim(0, 100)
 ax2.set_ylim(0, 1)
 ax2.set_xlabel('Iteration')
 ax2.set_ylabel('Loss')
 ax2.grid(True)
 
 def update_plot():
-    neuron.set_offsets(network.neuron.position)
-    
-    for i, line in enumerate(lines):
-        neuron_pos = network.neuron.position
-        start, end = line.get_xydata()
-        if i < 2:
-            end = [neuron_pos[0], neuron_pos[1]]
+    for i, neuron in enumerate(network.neurons):
+        if i >= len(ax1.texts):
+            ax1.text(neuron.position[0], neuron.position[1], f'N{i}\nw={neuron.weights}\nb={neuron.bias}', ha='center', va='center')
         else:
-            start = [neuron_pos[0], neuron_pos[1]]
-        line.set_data([start[0], end[0]], [start[1], end[1]])
+            ax1.texts[i].set_position(neuron.position)
+            ax1.texts[i].set_text(f'N{i}\nw={neuron.weights}\nb={neuron.bias}')
     
-    x, y_true = network.dataset[network.current_iteration % 4]
-    y_pred, _, inp_distances, out_distances = network.neuron.forward(x)
-    
-    texts['a1'].set_text(f'a1={x[0]}')
-    texts['a2'].set_text(f'a2={x[1]}')
-    texts['a3'].set_text(f'a3={y_pred[0]:.2f}')
-    texts['a4'].set_text(f'a4={y_pred[1]:.2f}')
-    
-    for i, d in enumerate(np.append(inp_distances, out_distances)):
-        texts[f'd{i+1}'].set_text(f'd{i+1}={d:.4f}')
-    
-    for i, w in enumerate(network.neuron.weights.flatten()):
-        texts[f'w{i+1}'].set_text(f'w{i+1}={w:.4f}')
-    
-    texts['b1'].set_text(f'b1={network.neuron.bias[0]:.2f}')
+    line_index = 0
+    for neuron in network.neurons:
+        for conn in neuron.outgoing_connections:
+            lines[line_index].set_data([neuron.position[0], conn.position[0]], [neuron.position[1], conn.position[1]])
+            # add_arrow(line)
+            line_index += 1
     
     loss_line.set_data(range(len(network.loss_history)), network.loss_history)
     ax2.set_xlim(0, max(100, len(network.loss_history)))
-    loss_text.set_text(f'Current Loss: {network.loss_history[-1]:.2f}')
+    ax2.set_ylim(0, max(1, max(network.loss_history)))
     
     plt.draw()
 
+dataset = np.array([
+    # [[0, 0], [0, 0]],
+    # [[0, 1], [1, 0]],
+    # [[1, 0], [1, 0]],
+    # [[1, 1], [0, 1]]
+    [[0, 0], [1, 0]],
+    [[0, 1], [1, 0]],
+    [[1, 0], [1, 0]],
+    [[1, 1], [1, 0]]
+])
+
+# for neuron in network.neurons:
+#     print("Neuron at", neuron.position, "has incoming connections", [conn.position for conn in neuron.incoming_connections])
+#     print("and outgoing connections", [conn.position for conn in neuron.outgoing_connections])
+
 def on_click(event):
-    network.train_step()
+    x, y_true = dataset[network.current_iteration % len(dataset)]
+    loss = network.train_step(x, y_true)
     update_plot()
 
 button_ax = plt.axes([0.8, 0.05, 0.1, 0.075])

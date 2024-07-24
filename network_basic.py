@@ -1,3 +1,4 @@
+import json
 from typing import List
 import numpy as np
 import matplotlib.pyplot as plt
@@ -16,7 +17,7 @@ class SpatialNeuron:
         self.is_output = False
         
     def initialize_weights(self):
-        self.weights = np.random.randn(len(self.incoming_connections), 1)
+        self.weights = np.random.randn(len(self.incoming_connections))
 
         
     def forward(self, inputs):
@@ -25,7 +26,11 @@ class SpatialNeuron:
         # print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
         z = np.dot(inputs, self.weights) + self.bias
         a = self.sigmoid(z)
-        return a[0]
+        # distance attention
+        output_distances = [np.linalg.norm(self.position - conn.position) for conn in self.outgoing_connections]
+        output_distances = np.array(output_distances).reshape(-1, 1)
+        a = a * (1 / output_distances)
+        return a
     
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
@@ -86,7 +91,9 @@ class SpatialNetwork:
                 return self.activations[i]
             neuron = self.neurons[i]
             inputs = np.array([activate_neuron(self.neurons.index(conn)) for conn in neuron.incoming_connections])
-            self.activations[i] = neuron.forward(inputs)
+            outgoing_activations = neuron.forward(inputs)
+            for j, conn in enumerate(neuron.outgoing_connections):
+                self.activations[self.neurons.index(conn)] = outgoing_activations[j]
             return self.activations[i]
         
         return [activate_neuron(i) for i in self.output_indices]
@@ -113,19 +120,20 @@ class SpatialNetwork:
                     out_index = self.neurons.index(conn)
                     weight_index = conn.incoming_connections.index(neuron)
                     out_delta = compute_gradient(out_index)
-                    delta += conn.weights[weight_index, 0] * out_delta
+                    delta += conn.weights[weight_index] * out_delta
                 
                 delta *= neuron.sigmoid_derivative(self.activations[i])
             
             if not neuron.is_input:
                 gradients[i]['bias'] = delta
-                gradients[i]['weights'] = delta * np.array([self.activations[self.neurons.index(n)] for n in neuron.incoming_connections]).reshape(-1, 1)
+                gradients[i]['weights'] = delta * [self.activations[self.neurons.index(n)] for n in neuron.incoming_connections]
                 
                 # Position gradient calculation remains the same
                 for j, conn in enumerate(neuron.incoming_connections):
                     d_vector = (conn.position - neuron.position) / np.linalg.norm(conn.position - neuron.position)
                     gradients[i]['position'] = np.add(gradients[i]['position'], delta * neuron.weights[j] * d_vector, out=gradients[i]['position'], casting='unsafe')
-            
+                    # print("Gradient position for neuron", neuron.position, "from", conn.position, "is", delta * neuron.weights[j] * d_vector)
+
             return delta
         
         for i in reversed(range(len(self.neurons))):
@@ -137,6 +145,7 @@ class SpatialNetwork:
     def train_step(self, x, y_true):
         y_pred = self.forward(x)
         gradients = self.backward(x, y_true, y_pred)
+        print("Gradients", gradients[2]["position"])
         
         for i, neuron in enumerate(self.neurons):
             if not neuron.is_input:
@@ -158,7 +167,7 @@ class SpatialNetwork:
 fig: plt.figure
 ax1: plt.Axes
 ax2: plt.Axes
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), gridspec_kw={'height_ratios': [3, 1]})
 plt.subplots_adjust(bottom=0.2)
 
 # Example usage

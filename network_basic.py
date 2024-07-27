@@ -14,14 +14,13 @@ class SpatialNeuron:
         self.is_hidden = False
         self.num_connections = num_connections
         self.weights = None
-        self.bias = np.random.randn(1)
+        self.bias = np.zeros(1)
         self.outgoing_connections : List[SpatialNeuron] = []
         self.incoming_connections : List[SpatialNeuron] = []
         self.dmin = 0.5  # minimum distance for spatial attention
         
     def initialize_weights(self):
-        self.weights = np.random.randn(len(self.incoming_connections))
-
+        self.weights = np.random.randn(len(self.incoming_connections)) * np.sqrt(1 / len(self.incoming_connections))
         
     def forward(self, inputs):
         # print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
@@ -40,7 +39,8 @@ class SpatialNeuron:
         return 1 / (1 + np.exp(-x))
     
     def sigmoid_derivative(self, x):
-        return self.sigmoid(x) * (1 - self.sigmoid(x))
+        sig = self.sigmoid(x)
+        return sig * (1 - sig)
 
 class SpatialNetwork:
     def __init__(self, node_positions, input_indices, output_indices):
@@ -59,7 +59,7 @@ class SpatialNetwork:
         self.initialize_connections()
         # activations is a matrix representing activation value sent from ith neuron to jth neuron
         self.activations = np.zeros((len(self.neurons), len(self.neurons)))
-        self.learning_rate = 0.8
+        self.learning_rate = 0.1
         self.position_learning_rate = 0.1
         self.current_iteration = 0
         self.loss_history = []
@@ -193,22 +193,31 @@ class SpatialNetwork:
             # print("Predicted", y_pred)
             # print(self.activations)
             single_row_gradients = self.backward(x, y_true, y_pred)
+            # for i, grad in single_row_gradients.items():
+            #     if i == 2:
+            #         print(f"w={grad['weights']}")
+                        #   , b={grad['bias']}, p={grad['position']}")
             for i, grad in single_row_gradients.items():
                 for key in grad:
                     gradients[i][key] += grad[key]
+
+            # change shape of y_pred to match y_true
+            y_pred = np.array(y_pred).reshape(-1)
 
             # Compute loss and accuracy
             prediction_loss = np.mean((y_pred - y_true) ** 2)
             # print("Prediction loss", prediction_loss)
             loss = prediction_loss
             total_loss += loss
+            # print("Predictions : ", np.round(y_pred))
+            # print("True : ", y_true)
             total_correct += np.all(np.round(y_pred) == y_true)
 
         # Average gradients
         for i in gradients:
             for key in gradients[i]:
                 gradients[i][key] = gradients[i][key] / len(dataset_step)
-        print("Gradients", gradients[2]['weights'])
+        # print("Gradients", gradients[2]['weights'])
         
         for i, neuron in enumerate(self.neurons):
             if not neuron.is_input:
@@ -299,7 +308,7 @@ dataset = np.array([
     [[0, 1], [1, 0]],
     [[1, 0], [1, 0]],
     [[1, 1], [1, 0]]
-])
+]) / 1.0 # Assuming binary data, divide by 1 to normalize
 
 # for neuron in network.neurons:
 #     print("Neuron at", neuron.position, "has incoming connections", [conn.position for conn in neuron.incoming_connections])

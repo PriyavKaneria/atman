@@ -59,8 +59,8 @@ class SpatialNetwork:
         self.initialize_connections()
         # activations is a matrix representing activation value sent from ith neuron to jth neuron
         self.activations = np.zeros((len(self.neurons), len(self.neurons)))
-        self.learning_rate = 0.1
-        self.position_learning_rate = 0.1
+        self.learning_rate = 0.3
+        self.position_learning_rate = 0.3
         self.current_iteration = 0
         self.loss_history = []
         
@@ -162,13 +162,13 @@ class SpatialNetwork:
                 gradients[i]['weights'] = np.array([self.activations[n.index][i] for n in neuron.incoming_connections]) * delta
                 
                 # Position gradient calculation remains the same
-                # for j, conn in enumerate(neuron.incoming_connections):
-                #     distance = np.linalg.norm(neuron.position - conn.position)
-                #     if distance < neuron.dmin:
-                #         d_vector = -0.001 * (np.array(conn.position) - neuron.position) / distance  # Repulsive force
-                #     else:
-                #         d_vector = (delta * neuron.weights[j] * self.activations[conn.index]) * (np.array(conn.position) - neuron.position) / (1 + distance)**3
-                #     gradients[i]['position'] = np.add(gradients[i]['position'], d_vector, out=gradients[i]['position'], casting='unsafe')
+                for j, conn in enumerate(neuron.incoming_connections):
+                    distance = np.linalg.norm(neuron.position - conn.position)
+                    if distance < neuron.dmin:
+                        d_vector = -0.001 * (np.array(conn.position) - neuron.position) / distance  # Repulsive force
+                    else:
+                        d_vector = (delta * neuron.weights[j] * self.activations[j][conn.index]) * (np.array(conn.position) - neuron.position) / (1 + distance)**3
+                    gradients[i]['position'] = np.add(gradients[i]['position'], d_vector, out=gradients[i]['position'], casting='unsafe')
 
             return delta
         
@@ -209,15 +209,16 @@ class SpatialNetwork:
             # print("Prediction loss", prediction_loss)
             loss = prediction_loss
             total_loss += loss
-            # print("Predictions : ", np.round(y_pred))
-            # print("True : ", y_true)
+            print("Predictions : ", np.round(y_pred))
+            print("True : ", y_true)
             total_correct += np.all(np.round(y_pred) == y_true)
 
         # Average gradients
         for i in gradients:
             for key in gradients[i]:
-                gradients[i][key] = gradients[i][key] / len(dataset_step)
-        # print("Gradients", gradients[2]['weights'])
+                if key != 'position':
+                    gradients[i][key] = gradients[i][key] / len(dataset_step)
+        # print("Gradients", gradients[2]['position'])
         
         for i, neuron in enumerate(self.neurons):
             if not neuron.is_input:
@@ -230,8 +231,8 @@ class SpatialNetwork:
         self.loss_history.append(loss_percentage)
         self.current_iteration += 1
         
-        print(f"Iteration {self.current_iteration}: Loss {loss_percentage:.4f}, Accuracy {accuracy:.2f}")
-        return
+        # print(f"Iteration {self.current_iteration}: Loss {loss_percentage:.4f}, Accuracy {accuracy:.2f}")
+        return loss, accuracy
 
 
 
@@ -275,8 +276,11 @@ ax2.set_ylim(0, 1)
 ax2.set_xlabel('Iteration')
 ax2.set_ylabel('Loss')
 ax2.grid(True)
+# also show the current loss value
+loss_accuracy_text = ax2.text(0.02, 0.95, '',
+                        verticalalignment='top', horizontalalignment='left', transform=ax2.transAxes)
 
-def update_plot():
+def update_plot(loss, accuracy):
     for i, neuron in enumerate(network.neurons):
         if i >= len(ax1.texts):
             ax1.text(neuron.position[0], neuron.position[1], f'N{i}\nw={neuron.weights}\nb={neuron.bias}', ha='center', va='center')
@@ -293,6 +297,7 @@ def update_plot():
             # add_arrow(line)
             line_index += 1
     
+    loss_accuracy_text.set_text(f'Iteration: {network.current_iteration}, Loss: {network.loss_history[-1]:.4f}, Accuracy: {accuracy:.2f}')
     loss_line.set_data(range(len(network.loss_history)), network.loss_history)
     ax2.set_xlim(0, max(100, len(network.loss_history)))
     ax2.set_ylim(0, max(1, max(network.loss_history)))
@@ -300,14 +305,14 @@ def update_plot():
     plt.draw()
 
 dataset = np.array([
-    # [[0, 0], [0, 0]],
-    # [[0, 1], [1, 0]],
-    # [[1, 0], [1, 0]],
-    # [[1, 1], [0, 1]]
-    [[0, 0], [1, 0]],
+    [[0, 0], [0, 0]],
     [[0, 1], [1, 0]],
     [[1, 0], [1, 0]],
-    [[1, 1], [1, 0]]
+    [[1, 1], [0, 1]]
+    # [[0, 0], [1, 0]],
+    # [[0, 1], [1, 0]],
+    # [[1, 0], [1, 0]],
+    # [[1, 1], [1, 0]]
 ]) / 1.0 # Assuming binary data, divide by 1 to normalize
 
 # for neuron in network.neurons:
@@ -318,8 +323,8 @@ step_size = len(dataset)
 def on_click(event):
     # step_no = network.current_iteration//len(dataset)
     # dataset_step = dataset[step_no:step_no+step_size]
-    network.train_step(dataset)
-    update_plot()
+    loss, accuracy = network.train_step(dataset)
+    update_plot(loss, accuracy)
 
 button_ax = plt.axes([0.8, 0.05, 0.1, 0.075])
 button = Button(button_ax, 'Next Iteration')

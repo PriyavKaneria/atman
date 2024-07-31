@@ -18,13 +18,16 @@ class SpatialNeuron:
         self.outgoing_connections : List[SpatialNeuron] = []
         self.incoming_connections : List[SpatialNeuron] = []
         
-    def initialize_weights(self):
-        # self.weights = np.random.randn(len(self.incoming_connections))
-        self.weights = np.ones(len(self.incoming_connections))
+    def initialize_weights_and_biases(self):
+        self.weights = np.random.randn(len(self.incoming_connections))
+        # self.weights = np.ones(len(self.incoming_connections))
+        self.bias = np.random.randn(1)
+        # print("Neuron at", self.position, "has weights", self.weights, "and bias", self.bias)
         
     def forward(self, inputs):
         # print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
         z = np.dot(inputs, self.weights) + self.bias
+        # print("Z", z)
         a = self.sigmoid(z)
         # output nodes don't have spatial attention
         if self.is_output:
@@ -54,6 +57,7 @@ class SpatialNetwork:
         
         for i in input_indices:
             self.neurons[i].is_input = True
+            self.neurons[i].num_connections = 1
         for i in output_indices:
             self.neurons[i].is_output = True
         for i in self.hidden_indices:
@@ -72,6 +76,7 @@ class SpatialNetwork:
         self.distances = distance_matrix([n.position for n in self.neurons], [n.position for n in self.neurons])
         
         # Connect input nodes to nearest hidden nodes
+        # only 1 hidden neuron connected per input node
         for i in self.input_indices:
             nearest_hidden = sorted(self.hidden_indices, key=lambda j: self.distances[i][j])[:self.neurons[i].num_connections]
             self.neurons[i].outgoing_connections = [self.neurons[j] for j in nearest_hidden]
@@ -94,7 +99,7 @@ class SpatialNetwork:
         
         # Initialize weights for hidden and output nodes
         for i in self.hidden_indices + self.output_indices:
-            self.neurons[i].initialize_weights()
+            self.neurons[i].initialize_weights_and_biases()
     
     def update_distances(self):
         self.distances = distance_matrix([n.position for n in self.neurons], [n.position for n in self.neurons])
@@ -115,7 +120,7 @@ class SpatialNetwork:
         # so we can do a recursion from the output nodes instead
 
         def activate_neuron(i):
-            neuron = self.neurons[i]
+            neuron : SpatialNeuron = self.neurons[i]
             inputs = np.array([self.activations[conn.index][i] for conn in neuron.incoming_connections])
             if not np.all(inputs != -1):
                 # if not all incoming connections are activated
@@ -123,25 +128,28 @@ class SpatialNetwork:
                 for conn in neuron.incoming_connections:
                     if self.activations[conn.index][i] == -1:
                         activate_neuron(conn.index)
+                inputs = np.array([self.activations[conn.index][i] for conn in neuron.incoming_connections])
 
             # if the code reaches here, all the incoming connections are activated
             # forward the neuron, save the activation value and return it
             # if the neuron is an output node, return the forwarded output
-            if neuron.is_output:
-                return neuron.forward(inputs)
             output_activations = neuron.forward(inputs)
+            if neuron.is_output:
+                return output_activations
             for idx, conn in enumerate(neuron.outgoing_connections):
                 # set the activation value for the outgoing connections
                 self.activations[i][conn.index] = output_activations[idx][0]
 
         # return the activations of the output nodes
-        for i in self.output_indices:
-            activate_neuron(i)
-        
         out = np.zeros(len(self.output_indices))
         for idx, output_index in enumerate(self.output_indices):
-            out[idx] = np.average([self.activations[conn.index][output_index] for conn in self.neurons[output_index].incoming_connections])
+            out[idx] = activate_neuron(output_index)[0]
         print("Output", out)
+
+        print("Activations")
+        r_act = np.round(self.activations, 2)
+        print(r_act[1][3], "\t", r_act[2][3], "\t", r_act[3][5], "\t", out[0])
+        print(r_act[0][2], "\t\t", r_act[2][4], "\t", out[1])
         return out
     
     def backward(self, x, y_true, y_pred):

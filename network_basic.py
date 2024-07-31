@@ -57,7 +57,6 @@ class SpatialNetwork:
         
         for i in input_indices:
             self.neurons[i].is_input = True
-            self.neurons[i].num_connections = 1
         for i in output_indices:
             self.neurons[i].is_output = True
         for i in self.hidden_indices:
@@ -66,7 +65,7 @@ class SpatialNetwork:
         self.initialize_connections()
         # activations is a matrix representing activation value sent from ith neuron to jth neuron
         self.activations = np.zeros((len(self.neurons), len(self.neurons)))
-        self.learning_rate = 0.1
+        self.learning_rate = 0.5
         self.position_learning_rate = 1
         self.current_iteration = 0
         self.loss_history = []
@@ -144,12 +143,14 @@ class SpatialNetwork:
         out = np.zeros(len(self.output_indices))
         for idx, output_index in enumerate(self.output_indices):
             out[idx] = activate_neuron(output_index)[0]
-        print("Output", out)
+        
+        if self.current_iteration % 10 == 0:
+            print("Output", out)
 
-        print("Activations")
-        r_act = np.round(self.activations, 2)
-        print(r_act[1][3], "\t", r_act[2][3], "\t", r_act[3][5], "\t", out[0])
-        print(r_act[0][2], "\t\t", r_act[2][4], "\t", out[1])
+        # print("Activations")
+        # r_act = np.round(self.activations, 2)
+        # print(r_act[1][3], "\t", r_act[2][3], "\t", r_act[3][5], "\t", out[0])
+        # print(r_act[0][2], "\t\t", r_act[2][4], "\t", out[1])
         return out
     
     def backward(self, x, y_true, y_pred):
@@ -253,7 +254,8 @@ class SpatialNetwork:
             # print("Prediction loss", prediction_loss)
             loss = prediction_loss
             total_loss += loss
-            print("Predictions : ", np.round(y_pred), "True : ", y_true)
+            if self.current_iteration % 10 == 0:
+                print("Predictions : ", np.round(y_pred), "True : ", y_true)
             total_correct += np.all(np.round(y_pred) == y_true)
 
         # Average gradients
@@ -364,7 +366,7 @@ def update_loss_plot(loss, accuracy):
     loss_accuracy_text.set_text(f'Iteration: {network.current_iteration}, Loss: {loss:.4f}, Accuracy: {accuracy:.2f}')
     loss_line.set_data(range(len(network.loss_history)), network.loss_history)
     ax2.set_xlim(0, max(100, len(network.loss_history)))
-    ax2.set_ylim(min(network.loss_history), max(network.loss_history))
+    ax2.set_ylim(0, 0.8)
     plt.draw()
 
 dataset = np.array([
@@ -387,7 +389,7 @@ def on_click(event):
     # step_no = network.current_iteration//len(dataset)
     # dataset_step = dataset[step_no:step_no+step_size]
     loss, accuracy = network.train_step(dataset)
-    if network.current_iteration % 3 == 0:
+    if network.current_iteration % 10 == 0:
         update_loss_plot(loss, accuracy)
     # if network.current_iteration % 10 == 0:
     #     update_plot()

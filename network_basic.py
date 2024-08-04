@@ -1,3 +1,4 @@
+from collections import deque
 import json
 from typing import List
 import numpy as np
@@ -9,7 +10,7 @@ from scipy.spatial import distance_matrix
 enable_spatial_attention = False
 show_weights_biases = False
 show_distances = False
-show_activations = True # show activations of last iteration
+show_activations = False # show activations of last iteration
 
 class SpatialNeuron:
     def __init__(self, index, position, num_connections=3):
@@ -23,35 +24,29 @@ class SpatialNeuron:
         self.bias = np.zeros(1)
         self.outgoing_connections : List[SpatialNeuron] = []
         self.incoming_connections : List[SpatialNeuron] = []
-    
-    # Xavier Initialization Function
-    def xavier_initialization(shape):
-        # Compute the scale factor based on the input shape
-        fan_in, fan_out = shape
-        scale = np.sqrt(2 / (fan_in + fan_out))
-        
-        # Initialize weights using a Gaussian distribution
-        return np.random.randn(fan_in, fan_out) * scale
         
     def initialize_weights_and_biases(self):
         # Number of incoming and outgoing connections
-        fan_in = len(self.incoming_connections)
-        fan_out = len(self.outgoing_connections)
+        # fan_in = len(self.incoming_connections)
+        # fan_out = len(self.outgoing_connections)
         
-        # Xavier initialization
-        if fan_in > 0 and fan_out > 0:
-            scale = np.sqrt(2 / (fan_in + fan_out))
-            self.weights = np.random.randn(fan_in) * scale
-        else:
-            self.weights = np.random.randn(len(self.incoming_connections))
+        # # Xavier initialization
+        # if fan_in > 0 and fan_out > 0:
+        #     scale = np.sqrt(2 / (fan_in + fan_out))
+        #     self.weights = np.random.randn(fan_in) * scale
+        # else:
+        self.weights = np.random.randn(len(self.incoming_connections))
         self.bias = np.random.randn(1)
         # print("Neuron at", self.position, "has weights", self.weights, "and bias", self.bias)
         
-    def forward(self, inputs):
+    def forward(self, inputs, activation=True):
         # print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
         z = np.dot(inputs, self.weights) + self.bias
         # print("Z", z)
-        a = self.activation(z)
+        if activation:
+            a = self.activation(z)
+        else:
+            a = z
         # output nodes don't have spatial attention
         if self.is_output:
             return a
@@ -65,10 +60,10 @@ class SpatialNeuron:
         return a
     
     def activation(self, x):
-        return self.sigmoid(x)
+        return self.tanh(x)
     
     def activation_derivative(self, x):
-        return self.sigmoid_derivative(x)
+        return self.tanh_derivative(x)
     
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
@@ -115,7 +110,7 @@ class SpatialNetwork:
         self.initialize_connections()
         # activations is a matrix representing activation value sent from ith neuron to jth neuron
         self.activations = np.zeros((len(self.neurons), len(self.neurons)))
-        self.learning_rate = 0.8
+        self.learning_rate = 0.002
         self.position_learning_rate = 0.5
         self.current_iteration = 0
         self.loss_history = []
@@ -141,7 +136,7 @@ class SpatialNetwork:
             for j in nearest:
                 # connect only if the node is at the same or more X position
                 # also if the node is not already connected
-                print(f"Connecting {self.neurons[i].position} to {self.neurons[j].position}")
+                # print(f"Connecting {self.neurons[i].position} to {self.neurons[j].position}")
                 if self.neurons[j].position[0] >= self.neurons[i].position[0] and self.neurons[j] not in self.neurons[i].incoming_connections:
                     self.neurons[j].incoming_connections.append(self.neurons[i])
                     self.neurons[i].outgoing_connections.append(self.neurons[j])
@@ -156,58 +151,55 @@ class SpatialNetwork:
         self.distances = distance_matrix([n.position for n in self.neurons], [n.position for n in self.neurons])
         # self distances are inf
         np.fill_diagonal(self.distances, np.inf)
-
+            
     def forward(self, inputs):
-        # reset activations, default value is -1
+        # Reset activations, default value is -1
         self.activations.fill(-1)
         
-        # set the activations for all hidden neurons connected to the input neurons
+        # Set the activations for input neurons
         for index, inp_node_index in enumerate(self.input_indices):
+            inp_value = inputs[index][0] if isinstance(inputs[index], np.ndarray) else inputs[index]
             for conn in self.neurons[inp_node_index].outgoing_connections:
-                if type(inputs[index]) == np.ndarray:
-                    self.activations[inp_node_index][conn.index] = inputs[index][0]
+                self.activations[inp_node_index][conn.index] = inp_value
+        
+        # Topological sort of neurons
+        sorted_neurons = self.topological_sort()
+        
+        # Activate neurons in topological order
+        for neuron_index in sorted_neurons:
+            neuron = self.neurons[neuron_index]
+            if not neuron.is_input:
+                inputs = np.array([self.activations[conn.index][neuron_index] for conn in neuron.incoming_connections])
+                output_activations = neuron.forward(inputs)
+                
+                if neuron.is_output:
+                    self.activations[neuron_index][neuron_index] = output_activations[0]
                 else:
-                    self.activations[inp_node_index][conn.index] = inputs[index]
+                    for idx, conn in enumerate(neuron.outgoing_connections):
+                        self.activations[neuron_index][conn.index] = output_activations[idx][0]
         
-        # this is a directed acyclic graph
-        # there can be outgoing connections that are dependent on unknown activations
-        # so we can do a recursion from the output nodes instead
+        # Return the activations of the output nodes
+        return np.array([self.activations[i][i] for i in self.output_indices])
 
-        def activate_neuron(curr_node):
-            neuron : SpatialNeuron = self.neurons[curr_node]
-            inputs = np.array([self.activations[conn.index][curr_node] for conn in neuron.incoming_connections])
-            if not np.all(inputs != -1):
-                # if not all incoming connections are activated
-                # recursively activate the incoming connections
-                for conn in neuron.incoming_connections:
-                    if self.activations[conn.index][curr_node] == -1:
-                        activate_neuron(conn.index)
-                inputs = np.array([self.activations[conn.index][curr_node] for conn in neuron.incoming_connections])
-
-            # if the code reaches here, all the incoming connections are activated
-            # forward the neuron, save the activation value and return it
-            # if the neuron is an output node, return the forwarded output
-            output_activations = neuron.forward(inputs)
-            if neuron.is_output:
-                self.activations[curr_node][curr_node] = output_activations[0]
-                return output_activations
-            for idx, conn in enumerate(neuron.outgoing_connections):
-                # set the activation value for the outgoing connections
-                self.activations[curr_node][conn.index] = output_activations[idx][0]
-
-        # return the activations of the output nodes
-        out = np.zeros(len(self.output_indices))
-        for idx, output_index in enumerate(self.output_indices):
-            out[idx] = activate_neuron(output_index)[0]
+    def topological_sort(self):
+        # Perform topological sort of the neurons
+        in_degree = {i: 0 for i in range(len(self.neurons))}
+        for neuron in self.neurons:
+            for conn in neuron.outgoing_connections:
+                in_degree[conn.index] += 1
         
-        # if self.current_iteration % 10 == 0:
-        # print("Output", out)
-
-        # print("Activations")
-        # r_act = np.round(self.activations, 2)
-        # for i in range(len(r_act)):
-        #     print(r_act[i])
-        return out
+        queue = deque(self.input_indices)
+        sorted_neurons = []
+        
+        while queue:
+            node = queue.popleft()
+            sorted_neurons.append(node)
+            for conn in self.neurons[node].outgoing_connections:
+                in_degree[conn.index] -= 1
+                if in_degree[conn.index] == 0:
+                    queue.append(conn.index)
+        
+        return sorted_neurons
     
     def backward(self, x, y_true, y_pred):
         gradients = {i: {'weights': np.zeros_like(n.weights) if n.weights is not None else 0, 
@@ -245,7 +237,7 @@ class SpatialNetwork:
                 activation_derivative = neuron.activation_derivative(z_l)
                 delta = delta_l * activation_derivative # delta^(l) = delta^(l+1) @ w^(l+1) * f'(z^(l))
 
-            print("Delta", delta)
+            # print("Delta", delta)
             if not neuron.is_input:
                 # Bias gradient = delta
                 gradients[curr_node]['bias'] = delta
@@ -354,20 +346,48 @@ plt.subplots_adjust(bottom=0.2)
 # Define node positions for a spatial network to predict sine waves
 # Input layer (1 node), two hidden layers (3 nodes each), output layer (1 node)
 node_positions = [
-    (0, 0.5),     # Input node
-    (1, 0),       # Hidden layer 1
-    (1.2, 0.25),
-    (1, 0.75),
-    (1.2, 1),
-    (2, 0),       # Hidden layer 2
-    (2.2, 0.25),
-    (2, 0.75),
-    (2.2, 1),
-    (3, 0.5)      # Output node
+    (0, 0.5),      # Input node
+
+    # Hidden layer 1 (5 nodes)
+    (1, 0.1),
+    (1.1, 0.3),
+    (1.2, 0.5),
+    (1.3, 0.7),
+    (1.4, 0.9),
+
+    # Hidden layer 2 (5 nodes)
+    (2, 0.1),
+    (2.1, 0.3),
+    (2.2, 0.5),
+    (2.3, 0.7),
+    (2.4, 0.9),
+
+    # Hidden layer 3 (5 nodes)
+    (3, 0.1),
+    (3.1, 0.3),
+    (3.2, 0.5),
+    (3.3, 0.7),
+    (3.4, 0.9),
+
+    # Hidden layer 4 (5 nodes)
+    (4, 0.1),
+    (4.1, 0.3),
+    (4.2, 0.5),
+    (4.3, 0.7),
+    (4.4, 0.9),
+
+    # Hidden layer 5 (5 nodes)
+    (5, 0.1),
+    (5.1, 0.3),
+    (5.2, 0.5),
+    (5.3, 0.7),
+    (5.4, 0.9),
+
+    (6, 0.5)       # Output node
 ]
 
 input_indices = [0]
-output_indices = [9]
+output_indices = [26]
 
 # Create the SpatialNetwork instance
 network = SpatialNetwork(node_positions, input_indices, output_indices)
@@ -376,6 +396,8 @@ network = SpatialNetwork(node_positions, input_indices, output_indices)
 def generate_sine_data(num_samples, start, end):
     x = np.linspace(start, end, num_samples)
     y = np.sin(x)
+    # normalize y to be between 0 and 1
+    y = (y + 1) / 2
     return np.column_stack((x.reshape(-1, 1), y.reshape(-1, 1)))
 
 # Training dataset: Cover the full range of sine wave
@@ -400,11 +422,11 @@ print(f"Output indices: {output_indices}")
 print("\nTraining dataset shape:", train_dataset.shape)
 print("Test dataset shape:", test_dataset.shape)
 
-# Display a few samples from each dataset
-print("\nSample from training dataset:")
-print(train_dataset[:5])
-print("\nSample from test dataset:")
-print(test_dataset[:5])
+# # Display a few samples from each dataset
+# print("\nSample from training dataset:")
+# print(train_dataset[:5])
+# print("\nSample from test dataset:")
+# print(test_dataset[:5])
 
 # Main plot
 input_nodes = [node_positions[i] for i in input_indices]
@@ -450,6 +472,8 @@ loss_accuracy_text = ax2.text(0.02, 0.95, '',
 ax3 = axs[1, 1]
 x = np.linspace(0, 2*np.pi, 100)
 y = np.sin(x)
+# normalize y to be between 0 and 1
+y = (y + 1) / 2
 ax3.plot(x, y)
 
 def update_plot():
@@ -516,10 +540,10 @@ def update_function_plot():
 
 # step_size = len(dataset)
 def on_click(event):
-    step_size = 1
-    train_step = train_dataset[network.current_iteration % len(train_dataset) * step_size: (network.current_iteration % len(train_dataset) + 1) * step_size]
-    test_step = test_dataset[network.current_iteration % len(test_dataset) * step_size: (network.current_iteration % len(test_dataset) + 1) * step_size]
-    loss, accuracy = network.train_step(train_step, test_step)
+    # step_size = 1
+    # train_step = train_dataset[network.current_iteration % len(train_dataset) * step_size: (network.current_iteration % len(train_dataset) + 1) * step_size]
+    # test_step = test_dataset[network.current_iteration % len(test_dataset) * step_size: (network.current_iteration % len(test_dataset) + 1) * step_size]
+    loss, accuracy = network.train_step(train_dataset, test_dataset)
     plot_update_step = 1
     if network.current_iteration % plot_update_step == 0:
         update_loss_plot(loss, accuracy)

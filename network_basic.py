@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 from scipy.spatial import distance_matrix
-from configs.building_10_2 import node_config, node_positions, input_indices, output_indices
+from configs.basic2x2 import node_config, node_positions, input_indices, output_indices
 
 # config
 enable_spatial_attention = False

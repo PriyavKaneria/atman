@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 from scipy.spatial import distance_matrix
+from configs.building_10_2 import node_config, node_positions, input_indices, output_indices
 
 # config
 enable_spatial_attention = False
@@ -13,7 +14,7 @@ show_distances = False
 show_activations = False # show activations of last iteration
 
 class SpatialNeuron:
-    def __init__(self, index, position, num_connections=3):
+    def __init__(self, index, position, activation="sigmoid", num_connections=3):
         self.index = index
         self.position = np.array(position)
         self.is_input = False
@@ -24,6 +25,7 @@ class SpatialNeuron:
         self.bias = np.zeros(1)
         self.outgoing_connections : List[SpatialNeuron] = []
         self.incoming_connections : List[SpatialNeuron] = []
+        self.activation_function = activation
         
     def initialize_weights_and_biases(self):
         # Number of incoming and outgoing connections
@@ -35,7 +37,11 @@ class SpatialNeuron:
         #     scale = np.sqrt(2 / (fan_in + fan_out))
         #     self.weights = np.random.randn(fan_in) * scale
         # else:
-        self.weights = np.random.randn(len(self.incoming_connections))
+        # self.weights = np.random.randn(len(self.incoming_connections))
+        self.weights = np.ndarray(shape=(len(self.incoming_connections)))
+        # self.weights.fill(0.001)
+        for i in range(len(self.incoming_connections)):
+            self.weights[i] = np.random.randn(1)
         self.bias = np.random.randn(1)
         # print("Neuron at", self.position, "has weights", self.weights, "and bias", self.bias)
         
@@ -60,10 +66,32 @@ class SpatialNeuron:
         return a
     
     def activation(self, x):
-        return self.tanh(x)
+        if self.activation_function == "sigmoid":
+            return self.sigmoid(x)
+        elif self.activation_function == "tanh":
+            return self.tanh(x)
+        elif self.activation_function == "relu":
+            return self.relu(x)
+        elif self.activation_function == "softmax":
+            return self.softmax(x)
+        elif self.activation_function == "linear":
+            return x
+        else:
+            raise ValueError(f"Invalid activation function {self.activation_function}")
     
     def activation_derivative(self, x):
-        return self.tanh_derivative(x)
+        if self.activation_function == "sigmoid":
+            return self.sigmoid_derivative(x)
+        elif self.activation_function == "tanh":
+            return self.tanh_derivative(x)
+        elif self.activation_function == "relu":
+            return self.relu_derivative(x)
+        elif self.activation_function == "softmax":
+            return self.softmax_derivative(x)
+        elif self.activation_function == "linear":
+            return 1
+        else:
+            raise ValueError(f"Invalid activation function {self.activation_function}")
     
     def sigmoid(self, x):
         return 1 / (1 + np.exp(-x))
@@ -92,8 +120,8 @@ class SpatialNeuron:
         return self.softmax(x) * (1 - self.softmax(x))
 
 class SpatialNetwork:
-    def __init__(self, node_positions, input_indices, output_indices):
-        self.neurons = [SpatialNeuron(ind, pos) for ind, pos in enumerate(node_positions)]
+    def __init__(self, node_config, input_indices, output_indices):
+        self.neurons = [SpatialNeuron(ind, pos, activation=node_config[pos]) for ind, pos in enumerate(node_config.keys())]
         self.input_indices = input_indices
         self.output_indices = output_indices
         self.dmin = 1.1  # minimum distance for spatial attention
@@ -110,7 +138,7 @@ class SpatialNetwork:
         self.initialize_connections()
         # activations is a matrix representing activation value sent from ith neuron to jth neuron
         self.activations = np.zeros((len(self.neurons), len(self.neurons)))
-        self.learning_rate = 0.002
+        self.learning_rate = 0.2
         self.position_learning_rate = 0.5
         self.current_iteration = 0
         self.loss_history = []
@@ -206,14 +234,16 @@ class SpatialNetwork:
                          'bias': 0,
                          'position': np.zeros_like(n.position)} 
                      for i, n in enumerate(self.neurons)}
+        deltas = {i: 0 for i in range(len(self.neurons))}
         
         # Compute output gradients
         output_deltas = {}
         for i, (y_true, y_pred) in enumerate(zip(y_true, y_pred)):
             output_index = self.output_indices[i]
             d_loss = y_pred - y_true
-            d_sigmoid = self.neurons[output_index].activation_derivative(y_pred)
-            output_deltas[output_index] = d_loss * d_sigmoid
+            # print("Loss", d_loss, "y_true", y_true, "y_pred", y_pred)
+            d_activation_derivative = self.neurons[output_index].activation_derivative(y_pred)
+            output_deltas[output_index] = d_loss * d_activation_derivative
         
         def compute_gradient(curr_node):
             neuron : SpatialNeuron = self.neurons[curr_node]
@@ -221,16 +251,18 @@ class SpatialNetwork:
             if curr_node in output_deltas:
                 # print("got value from output deltas")
                 delta = output_deltas[curr_node]
+                deltas[curr_node] = delta
             else:
                 delta_l_plus_1 = np.zeros(len(neuron.outgoing_connections))
                 weights_l_plus_1 = np.zeros(len(neuron.outgoing_connections))
 
                 for outgoing_connection_number, conn in enumerate(neuron.outgoing_connections):
                     weight_index = conn.incoming_connections.index(neuron)
-                    delta_l_plus_1[outgoing_connection_number] = gradients[conn.index]['bias'] # delta^(l+1)
+                    delta_l_plus_1[outgoing_connection_number] = deltas[conn.index] # delta^(l+1)
                     weights_l_plus_1[outgoing_connection_number] = conn.weights[weight_index] # w^(l+1)
                 
                 delta_l = delta_l_plus_1 @ weights_l_plus_1 # w^(l+1) * delta^(l+1)
+                deltas[curr_node] = delta_l
                 
                 z_l = np.average([self.activations[conn.index][curr_node] for conn in neuron.incoming_connections])
                 
@@ -281,7 +313,7 @@ class SpatialNetwork:
             if enable_spatial_attention:
                 self.update_distances()
             # print("Predicted", y_pred)
-            # print(self.activations)
+            # print(np.max(self.activations))
             single_row_gradients = self.backward(x, y_true, y_pred)
             # for i, grad in single_row_gradients.items():
             #     if i == 2:
@@ -299,7 +331,7 @@ class SpatialNetwork:
                 return super().default(obj)
         # print(json.dumps(gradients, cls=NumpyEncoder, indent=2))
 
-        for x, y_true in test_dataset:
+        for x, y_true in test_dataset.copy():
             y_pred = self.forward(x)
             # change shape of y_pred to match y_true
             y_pred = np.array(y_pred).reshape(-1)
@@ -345,52 +377,9 @@ ax1 = fig.add_subplot(2, 2, (1, 2))
 plt.subplots_adjust(bottom=0.2)
 # Define node positions for a spatial network to predict sine waves
 # Input layer (1 node), two hidden layers (3 nodes each), output layer (1 node)
-node_positions = [
-    (0, 0.5),      # Input node
-
-    # Hidden layer 1 (5 nodes)
-    (1, 0.1),
-    (1.1, 0.3),
-    (1.2, 0.5),
-    (1.3, 0.7),
-    (1.4, 0.9),
-
-    # Hidden layer 2 (5 nodes)
-    (2, 0.1),
-    (2.1, 0.3),
-    (2.2, 0.5),
-    (2.3, 0.7),
-    (2.4, 0.9),
-
-    # Hidden layer 3 (5 nodes)
-    (3, 0.1),
-    (3.1, 0.3),
-    (3.2, 0.5),
-    (3.3, 0.7),
-    (3.4, 0.9),
-
-    # Hidden layer 4 (5 nodes)
-    (4, 0.1),
-    (4.1, 0.3),
-    (4.2, 0.5),
-    (4.3, 0.7),
-    (4.4, 0.9),
-
-    # Hidden layer 5 (5 nodes)
-    (5, 0.1),
-    (5.1, 0.3),
-    (5.2, 0.5),
-    (5.3, 0.7),
-    (5.4, 0.9),
-
-    (6, 0.5)       # Output node
-]
-
-input_indices = [0]
-output_indices = [26]
 
 # Create the SpatialNetwork instance
-network = SpatialNetwork(node_positions, input_indices, output_indices)
+network = SpatialNetwork(node_config, input_indices, output_indices)
 
 # Generate datasets
 def generate_sine_data(num_samples, start, end):
@@ -401,17 +390,17 @@ def generate_sine_data(num_samples, start, end):
     return np.column_stack((x.reshape(-1, 1), y.reshape(-1, 1)))
 
 # Training dataset: Cover the full range of sine wave
-train_dataset = generate_sine_data(100, 0, 2*np.pi)
+train_dataset = generate_sine_data(60, 0, 2*np.pi)
 train_dataset = np.expand_dims(train_dataset, axis=2)
 
 # Test dataset: Include values outside the training range to test generalization
-test_dataset = generate_sine_data(20, 0.5*np.pi, 1.5*np.pi)
+test_dataset = generate_sine_data(40, 0, 2*np.pi)
 test_dataset = np.expand_dims(test_dataset, axis=2)
 
-# Normalize the datasets
-max_val = max(np.max(np.abs(train_dataset)), np.max(np.abs(test_dataset)))
-train_dataset /= max_val
-test_dataset /= max_val
+# # Normalize the datasets
+# max_val = max(np.max(np.abs(train_dataset)), np.max(np.abs(test_dataset)))
+# train_dataset /= max_val
+# test_dataset /= max_val
 
 # Example usage
 print("Network configuration:")
@@ -422,11 +411,11 @@ print(f"Output indices: {output_indices}")
 print("\nTraining dataset shape:", train_dataset.shape)
 print("Test dataset shape:", test_dataset.shape)
 
-# # Display a few samples from each dataset
-# print("\nSample from training dataset:")
-# print(train_dataset[:5])
-# print("\nSample from test dataset:")
-# print(test_dataset[:5])
+# Display a few samples from each dataset
+print("\nSample from training dataset:")
+print(train_dataset[:5])
+print("\nSample from test dataset:")
+print(test_dataset[:5])
 
 # Main plot
 input_nodes = [node_positions[i] for i in input_indices]
@@ -470,11 +459,9 @@ loss_accuracy_text = ax2.text(0.02, 0.95, '',
 
 # Function plot
 ax3 = axs[1, 1]
-x = np.linspace(0, 2*np.pi, 100)
-y = np.sin(x)
-# normalize y to be between 0 and 1
-y = (y + 1) / 2
-ax3.plot(x, y)
+ax3.plot(train_dataset[:, 0][:, 0], train_dataset[:, 1][:, 0], label='Training data')
+ax3.set_xlim(0, 2*np.pi)
+ax3.set_ylim(0, 1)
 
 def update_plot():
     for annotation in ax1.texts:
@@ -524,10 +511,10 @@ def update_loss_plot(loss, accuracy):
 
 def update_function_plot():
     # plot the predicted sine wave
-    x = np.linspace(0, 2*np.pi, 100)
-    y = np.zeros_like(x)
+    x, y = test_dataset[:, 0][:, 0].copy(), test_dataset[:, 1][:, 0].copy()
     for i, x_val in enumerate(x):
         y[i] = network.forward(np.array([[x_val]]))[0]
+        # print(f"Predicted {y[i]:.2f} for {x_val:.2f}, True {np.sin(x_val):.2f}")
     if len(ax3.lines) > 1:
         ax3.lines[1].set_data(x, y)
     else:
@@ -544,11 +531,12 @@ def on_click(event):
     # train_step = train_dataset[network.current_iteration % len(train_dataset) * step_size: (network.current_iteration % len(train_dataset) + 1) * step_size]
     # test_step = test_dataset[network.current_iteration % len(test_dataset) * step_size: (network.current_iteration % len(test_dataset) + 1) * step_size]
     loss, accuracy = network.train_step(train_dataset, test_dataset)
+    # plot asynchrously
+
     plot_update_step = 1
     if network.current_iteration % plot_update_step == 0:
         update_loss_plot(loss, accuracy)
         update_function_plot()
-    if network.current_iteration % plot_update_step == 0:
         update_plot()
 
 button_ax = plt.axes([0.8, 0.05, 0.1, 0.075])

@@ -1,18 +1,37 @@
 from collections import deque
 import json
-from typing import List
+from typing import Any, List
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
+import matplotlib
 from scipy.spatial import distance_matrix
-from configs.basic2x2 import node_config, node_positions, input_indices, output_indices
+from configs.basic2x5 import node_config, node_positions, input_indices, output_indices
+import pickle
+from datetime import datetime
+import tkinter as tk
+from tkinter.filedialog import askopenfilename
+import sys
+from pynput import keyboard
+
+root = tk.Tk()
+root.withdraw()
 
 # config
+auto_start_training = True
 enable_spatial_attention = False
 show_weights_biases = False
 show_distances = False
 show_activations = False # show activations of last iteration
 
+# the weights and biases of the network will be generated randomly around this seed
+seed_weights : bool = True
+seed_checkpoint_path = "./checkpoints/checkpoint_2024-08-07_14-00-39.atmn"
+seed_weights_bias : Any = None
+if seed_weights:
+    with open(seed_checkpoint_path, 'rb') as f:
+        seed_weights_bias = pickle.load(f)
+        
 class SpatialNeuron:
     def __init__(self, index, position, activation="sigmoid", num_connections=3):
         self.index = index
@@ -39,11 +58,17 @@ class SpatialNeuron:
         # else:
         # self.weights = np.random.randn(len(self.incoming_connections))
         self.weights : np.ndarray = np.ndarray(shape=(len(self.incoming_connections)))
-        # self.weights.fill(0.001)
-        for i in range(len(self.incoming_connections)):
-            self.weights[i] = np.random.randn(1)
-        self.bias = np.random.randn(1)
-        # print("Neuron at", self.position, "has weights", self.weights, "and bias", self.bias)
+        if seed_weights and self.index < len(seed_weights_bias):
+            self.weights = seed_weights_bias[self.index][0][:len(self.incoming_connections)]
+            self.bias = seed_weights_bias[self.index][1]
+            # add some noise
+            self.weights += np.random.randn(len(self.incoming_connections)) * 0.01
+            self.bias += np.random.randn(1) * 0.01
+        else:
+            for i in range(len(self.incoming_connections)):
+                self.weights[i] = np.random.randn(1)
+            self.bias = np.random.randn(1)
+        print("Neuron at", self.position, "has weights", self.weights, "and bias", self.bias)
 
     def forward(self, inputs, activation=True):
         # print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
@@ -130,6 +155,7 @@ class SpatialNetwork:
 
         for i in input_indices:
             self.neurons[i].is_input = True
+            # self.neurons[i].num_connections = 20
         for i in output_indices:
             self.neurons[i].is_output = True
         for i in self.hidden_indices:
@@ -138,7 +164,7 @@ class SpatialNetwork:
         self.initialize_connections()
         # activations is a matrix representing activation value sent from ith neuron to jth neuron
         self.activations = np.zeros((len(self.neurons), len(self.neurons)))
-        self.learning_rate = 0.2
+        self.learning_rate = 0.0005
         self.position_learning_rate = 0.5
         self.current_iteration = 0
         self.loss_history = []
@@ -165,15 +191,18 @@ class SpatialNetwork:
                 # connect only if the node is at the same or more X position
                 # also if the node is not already connected
                 # print(f"Connecting {self.neurons[i].position} to {self.neurons[j].position}")
-                if self.neurons[j].position[0] >= self.neurons[i].position[0] and self.neurons[j] not in self.neurons[i].incoming_connections:
-                    self.neurons[j].incoming_connections.append(self.neurons[i])
-                    self.neurons[i].outgoing_connections.append(self.neurons[j])
-                if len(self.neurons[i].outgoing_connections) == self.neurons[i].num_connections:
+                from_neuron : SpatialNeuron = self.neurons[i]
+                to_neuron : SpatialNeuron = self.neurons[j]
+                if to_neuron.position[0] >= from_neuron.position[0] and to_neuron not in from_neuron.incoming_connections:
+                    to_neuron.incoming_connections.append(from_neuron)
+                    from_neuron.outgoing_connections.append(to_neuron)
+                if len(from_neuron.outgoing_connections) == from_neuron.num_connections:
                     break
 
         # Initialize weights for hidden and output nodes
         for i in self.hidden_indices + self.output_indices:
-            self.neurons[i].initialize_weights_and_biases()
+            neuron : SpatialNeuron = self.neurons[i]
+            neuron.initialize_weights_and_biases()
 
     def update_distances(self):
         self.distances = distance_matrix([n.position for n in self.neurons], [n.position for n in self.neurons])
@@ -262,6 +291,7 @@ class SpatialNetwork:
                     weights_l_plus_1[outgoing_connection_number] = conn.weights[weight_index] # w^(l+1)
 
                 delta_l = delta_l_plus_1 @ weights_l_plus_1 # w^(l+1) * delta^(l+1)
+                # print("Delta l", delta_l, "delta_l_plus_1", delta_l_plus_1, "weights_l_plus_1", weights_l_plus_1)
                 deltas[curr_node] = delta_l
 
                 z_l = np.average([self.activations[conn.index][curr_node] for conn in neuron.incoming_connections])
@@ -342,7 +372,7 @@ class SpatialNetwork:
             total_loss += loss
             # if self.current_iteration % 10 == 0:
             # print("Predictions : ", np.round(y_pred, 2), "True : ", np.round(y_true, 2))
-            total_correct += np.all(np.round(y_pred, 2) == np.round(y_true, 2))
+            total_correct += np.all(np.round(y_pred, 1) == np.round(y_true, 1))
 
         # Average gradients
         for i in gradients:
@@ -363,17 +393,55 @@ class SpatialNetwork:
 
         # print(f"Iteration {self.current_iteration}: Loss {loss_percentage:.4f}, Accuracy {accuracy:.2f}")
         return loss_percentage, accuracy
+    
+    def save_checkpoint(self, path):
+        print(f"Saving checkpoint to {path}")
+        with open(path, 'wb') as f:
+            pickle.dump([(neuron.weights, neuron.bias) for neuron in self.neurons], f)
+            print("Checkpoint saved")
+        return
+    
+    def load_checkpoint(self, path):
+        print(f"Loading checkpoint from {path}")
+        with open(path, 'rb') as f:
+            loaded_network = pickle.load(f)
+        for i, (weights, bias) in enumerate(loaded_network):
+            self.neurons[i].weights = weights
+            self.neurons[i].bias = bias
+        print("Checkpoint loaded")
+        return
 
 
 # Visualization setup
 # Correcting the one-liner to create the desired subplot layout
-fig, axs = plt.subplots(2, 2, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1], 'width_ratios': [1, 1], 'wspace': 0.3}, squeeze=False)
+fig, axs = plt.subplots(2, 2, figsize=(3, 2), gridspec_kw={'height_ratios': [1, 1], 'width_ratios': [1, 1], 'wspace': 0.1}, squeeze=False)
 # Merging the first row to create a single plot spanning two columns
 fig.delaxes(axs[0, 0])
 fig.delaxes(axs[0, 1])
 ax1 = fig.add_subplot(2, 2, (1, 2))
 
-plt.subplots_adjust(bottom=0.2)
+# def move_figure(f, x, y):
+#     """Move figure's upper left corner to pixel (x, y)"""
+#     backend = matplotlib.get_backend()
+#     if backend == 'TkAgg':
+#         f.canvas.manager.window.wm_geometry("+%d+%d" % (x, y))
+#     elif backend == 'WXAgg':
+#         f.canvas.manager.window.SetPosition((x, y))
+#     elif backend == 'macosx':
+#         mgr = plt.get_current_fig_manager()
+#         if mgr:
+#             mgr.window.wm_geometry("+" + str(x) + "+" + str(y))
+#     else:
+#         # This works for QT and GTK
+#         # You can also use window.setGeometry
+#         f.canvas.manager.window.move(x, y)
+
+# Movie the figure to the x and y arguments passed to run the code
+arg_x = sys.argv[1] if len(sys.argv) > 1 else 0
+arg_y = sys.argv[2] if len(sys.argv) > 2 else 0
+# move_figure(fig, int(arg_x), int(arg_y))
+
+plt.subplots_adjust(bottom=0.3)
 # Define node positions for a spatial network to predict sine waves
 # Input layer (1 node), two hidden layers (3 nodes each), output layer (1 node)
 
@@ -418,11 +486,11 @@ print(test_dataset[:5])
 
 # Main plot
 input_nodes = [node_positions[i] for i in input_indices]
-input_plot = ax1.scatter([p[0] for p in input_nodes], [p[1] for p in input_nodes], c='blue', s=300, zorder=2)
+input_plot = ax1.scatter([p[0] for p in input_nodes], [p[1] for p in input_nodes], c='blue', s=50, zorder=2)
 output_nodes = [node_positions[i] for i in output_indices]
-output_plot = ax1.scatter([p[0] for p in output_nodes], [p[1] for p in output_nodes], c='green', s=300, zorder=2)
+output_plot = ax1.scatter([p[0] for p in output_nodes], [p[1] for p in output_nodes], c='green', s=50, zorder=2)
 neuron_nodes = [node_positions[i] for i in network.hidden_indices]
-neuron_plot = ax1.scatter([p[0] for p in neuron_nodes], [p[1] for p in neuron_nodes], c='orange', s=300, zorder=3)
+neuron_plot = ax1.scatter([p[0] for p in neuron_nodes], [p[1] for p in neuron_nodes], c='orange', s=50, zorder=3)
 lines = []
 
 def add_arrow(line, position=None, direction='right', size=10, color='gray'):
@@ -443,6 +511,21 @@ for neuron in network.neurons:
 ax1.set_xlim(min([p[0] for p in node_positions]) - 0.5, max([p[0] for p in node_positions]) + 0.5)
 ax1.set_ylim(min([p[1] for p in node_positions]) - 0.5, max([p[1] for p in node_positions]) + 0.5)
 ax1.axis('off')
+for i, neuron in enumerate(network.neurons):
+    # calculate incoming connection distances
+    incoming_distances = []
+    for conn in neuron.incoming_connections:
+        incoming_distances.append(round(float(network.distances[i][conn.index]), 2))
+
+    neuron_label_text = f'N{i}'
+    if show_weights_biases:
+        neuron_label_text += f'\nw={neuron.weights}\nb={neuron.bias}'
+    if show_distances:
+        neuron_label_text += f'\nd={incoming_distances}'
+    if show_activations:
+        acts = [round(float(network.activations[conn.index][i]), 2) for conn in neuron.incoming_connections]
+        neuron_label_text += f'\na={acts}'
+    ax1.text(neuron.position[0]-.1, neuron.position[1]+.1, neuron_label_text, ha='center', va='center')
 
 # Loss plot
 ax2 = axs[1, 0]
@@ -459,8 +542,8 @@ loss_accuracy_text = ax2.text(0.02, 0.95, '',
 # Function plot
 ax3 = axs[1, 1]
 ax3.plot(train_dataset[:, 0][:, 0], train_dataset[:, 1][:, 0], label='Training data')
-ax3.set_xlim(0, 2*np.pi)
-ax3.set_ylim(0, 1)
+ax3.set_xlim(-0.5, 2*np.pi + 0.5)
+ax3.set_ylim(-0.5, 1.5)
 
 def update_plot():
     for annotation in ax1.texts:
@@ -480,11 +563,8 @@ def update_plot():
         if show_activations:
             acts = [round(float(network.activations[conn.index][i]), 2) for conn in neuron.incoming_connections]
             neuron_label_text += f'\na={acts}'
-        if i >= len(ax1.texts):
-            ax1.text(neuron.position[0]-.1, neuron.position[1]+.1, neuron_label_text, ha='center', va='center')
-        else:
-            ax1.texts[i].set_position(tuple(neuron.position))
-            ax1.texts[i].set_text(neuron_label_text)
+        ax1.texts[i].set_position(tuple(neuron.position))
+        ax1.texts[i].set_text(neuron_label_text)
 
     neuron_plot.set_offsets([n.position for n in network.neurons if n.is_hidden])
 
@@ -501,7 +581,7 @@ curr_max_loss = 0.3
 def update_loss_plot(loss, accuracy):
     global curr_max_loss
     curr_max_loss = max(curr_max_loss, loss)
-    loss_accuracy_text.set_text(f'Iteration: {network.current_iteration}, Loss: {loss:.4f}, Accuracy: {(accuracy*100):.1f}%')
+    loss_accuracy_text.set_text(f'Iteration: {network.current_iteration}, \nLoss: {loss:.4f}, \nAccuracy: {(accuracy*100):.2f}%')
     loss_line.set_data(range(len(network.loss_history)), network.loss_history)
     ax2.set_xlim(0, max(100, len(network.loss_history)))
     ax2.set_ylim(0, curr_max_loss)
@@ -536,18 +616,24 @@ def on_click(event):
     if network.current_iteration % plot_update_step == 0:
         update_loss_plot(loss, accuracy)
         update_function_plot()
-        update_plot()
+        if enable_spatial_attention or show_distances or show_distances or show_activations:
+            update_plot()
 
 button_ax = plt.axes((0.8, 0.05, 0.1, 0.075))
 button = Button(button_ax, 'Next Iteration')
 button.on_clicked(on_click)
 
 # play pause training with 100ms interval
-play_button = Button(plt.axes((0.7, 0.05, 0.1, 0.075)), 'Play')
-pause_button = Button(plt.axes((0.6, 0.05, 0.1, 0.075)), 'Pause')
-pause = False
+play_button = Button(plt.axes((0.6, 0.05, 0.1, 0.075)), 'Play')
+pause_button = Button(plt.axes((0.4, 0.05, 0.1, 0.075)), 'Pause')
+pause = True
+
+# Buttons to save checkpoints
+save_button = Button(plt.axes((0.2, 0.05, 0.1, 0.075)), 'Save Checkpoint')
+load_button = Button(plt.axes((0, 0.05, 0.1, 0.075)), 'Load Checkpoint')
 
 def on_play(event):
+    print("Playing")
     global pause
     pause = False
     while not pause:
@@ -557,8 +643,35 @@ def on_play(event):
 def on_pause(event):
     global pause
     pause = True
+    
+def on_save(event):
+    ckpt_name = f"checkpoint_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.atmn"
+    network.save_checkpoint("./checkpoints/" + ckpt_name)
+    
+def on_load(event):
+    # select a checkpoint file
+    file_path = askopenfilename(defaultextension="checkpoints/*.atmn", filetypes=[("Atman Checkpoint", "*.atmn")])
+    network.load_checkpoint(file_path)
+
+def on_release(key):
+    if key == keyboard.Key.esc:
+        if pause:
+            on_play(None)
+        else:
+            on_pause(None)
+    elif key == 'q':
+        plt.close()
+    return
+        
+listener = keyboard.Listener(on_release=on_release)
+listener.start()
 
 play_button.on_clicked(on_play)
 pause_button.on_clicked(on_pause)
+save_button.on_clicked(on_save)
+load_button.on_clicked(on_load)
 
+if auto_start_training:
+    on_play(None)
+    
 plt.show()

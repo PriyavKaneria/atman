@@ -2,17 +2,18 @@ from collections import deque
 import json
 from typing import Any, List
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Button
-import matplotlib
-from scipy.spatial import distance_matrix
-from configs.basic2x5 import node_config, node_positions, input_indices, output_indices
-import pickle
-from datetime import datetime
+import sys
 import tkinter as tk
 from tkinter.filedialog import askopenfilename
-import sys
-from pynput import keyboard
+import pickle
+from scipy.spatial import distance_matrix
+from datetime import datetime
+from PyQt6.QtWidgets import QApplication, QGraphicsPolygonItem, QHBoxLayout, QMainWindow, QSizePolicy, QVBoxLayout, QWidget, QLabel, QPushButton, QGridLayout, QGraphicsScene, QGraphicsView, QGraphicsItemGroup, QGraphicsLineItem, QGraphicsTextItem, QGraphicsEllipseItem
+from PyQt6.QtCore import Qt, QTimer, QLineF, QPointF
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPolygonF, QVector2D
+from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+
+from configs.basic2x5 import node_config, node_positions, input_indices, output_indices
 
 root = tk.Tk()
 root.withdraw()
@@ -26,16 +27,16 @@ show_activations = False # show activations of last iteration
 
 # the weights and biases of the network will be generated randomly around this seed
 seed_weights : bool = True
-seed_checkpoint_path = "./checkpoints/checkpoint_2024-08-07_14-00-39.atmn"
+seed_checkpoint_path = "./checkpoints/checkpoint_2024-08-07_14-50-27.atmn"
 seed_weights_bias : Any = None
 if seed_weights:
     with open(seed_checkpoint_path, 'rb') as f:
         seed_weights_bias = pickle.load(f)
-        
+
 class SpatialNeuron:
     def __init__(self, index, position, activation="sigmoid", num_connections=3):
         self.index = index
-        self.position = np.array(position)
+        self.position = np.array(position) * [6, 8]
         self.is_input = False
         self.is_output = False
         self.is_hidden = False
@@ -393,14 +394,14 @@ class SpatialNetwork:
 
         # print(f"Iteration {self.current_iteration}: Loss {loss_percentage:.4f}, Accuracy {accuracy:.2f}")
         return loss_percentage, accuracy
-    
+
     def save_checkpoint(self, path):
         print(f"Saving checkpoint to {path}")
         with open(path, 'wb') as f:
             pickle.dump([(neuron.weights, neuron.bias) for neuron in self.neurons], f)
             print("Checkpoint saved")
         return
-    
+
     def load_checkpoint(self, path):
         print(f"Loading checkpoint from {path}")
         with open(path, 'rb') as f:
@@ -411,267 +412,286 @@ class SpatialNetwork:
         print("Checkpoint loaded")
         return
 
+class MainWindow(QMainWindow):
+    def __init__(self, node_config, input_indices, output_indices):
+        super().__init__()
+        self.setWindowTitle("Spatial Network Visualization")
 
-# Visualization setup
-# Correcting the one-liner to create the desired subplot layout
-fig, axs = plt.subplots(2, 2, figsize=(3, 2), gridspec_kw={'height_ratios': [1, 1], 'width_ratios': [1, 1], 'wspace': 0.1}, squeeze=False)
-# Merging the first row to create a single plot spanning two columns
-fig.delaxes(axs[0, 0])
-fig.delaxes(axs[0, 1])
-ax1 = fig.add_subplot(2, 2, (1, 2))
+        self.network = SpatialNetwork(node_config, input_indices, output_indices)
 
-# def move_figure(f, x, y):
-#     """Move figure's upper left corner to pixel (x, y)"""
-#     backend = matplotlib.get_backend()
-#     if backend == 'TkAgg':
-#         f.canvas.manager.window.wm_geometry("+%d+%d" % (x, y))
-#     elif backend == 'WXAgg':
-#         f.canvas.manager.window.SetPosition((x, y))
-#     elif backend == 'macosx':
-#         mgr = plt.get_current_fig_manager()
-#         if mgr:
-#             mgr.window.wm_geometry("+" + str(x) + "+" + str(y))
-#     else:
-#         # This works for QT and GTK
-#         # You can also use window.setGeometry
-#         f.canvas.manager.window.move(x, y)
+        # Training and test datasets
+        self.train_dataset = generate_sine_data(60, 0, 2 * np.pi)
+        self.train_dataset = np.expand_dims(self.train_dataset, axis=2)
+        self.test_dataset = generate_sine_data(40, 0, 2 * np.pi)
+        self.test_dataset = np.expand_dims(self.test_dataset, axis=2)
 
-# Movie the figure to the x and y arguments passed to run the code
-arg_x = sys.argv[1] if len(sys.argv) > 1 else 0
-arg_y = sys.argv[2] if len(sys.argv) > 2 else 0
-# move_figure(fig, int(arg_x), int(arg_y))
+        self.main_layout = QVBoxLayout()
+        self.central_widget = QWidget()
+        self.central_widget.setLayout(self.main_layout)
+        self.setCentralWidget(self.central_widget)
 
-plt.subplots_adjust(bottom=0.3)
-# Define node positions for a spatial network to predict sine waves
-# Input layer (1 node), two hidden layers (3 nodes each), output layer (1 node)
+        self.network_plot = NetworkPlot(self.network)
+        self.loss_function_layout = QHBoxLayout()
+        
+        self.loss_plot = LossPlot(self.network)
+        self.function_plot = FunctionPlot(self.test_dataset, self.network)
 
-# Create the SpatialNetwork instance
-network = SpatialNetwork(node_config, input_indices, output_indices)
+        self.main_layout.addWidget(self.network_plot)
+        self.loss_function_layout.addWidget(self.loss_plot)
+        self.loss_function_layout.addWidget(self.function_plot)
+        self.main_layout.addLayout(self.loss_function_layout)
 
-# Generate datasets
+        self.button_layout = QGridLayout()
+        self.main_layout.addLayout(self.button_layout)
+
+        self.next_button = QPushButton("Next Iteration")
+        self.next_button.clicked.connect(self.train_step)
+        self.button_layout.addWidget(self.next_button, 0, 0)
+
+        self.play_button = QPushButton("Play")
+        self.play_button.clicked.connect(self.start_training)
+        self.button_layout.addWidget(self.play_button, 0, 1)
+
+        self.pause_button = QPushButton("Pause")
+        self.pause_button.clicked.connect(self.stop_training)
+        self.button_layout.addWidget(self.pause_button, 0, 2)
+
+        self.save_button = QPushButton("Save Checkpoint")
+        self.save_button.clicked.connect(self.save_checkpoint)
+        self.button_layout.addWidget(self.save_button, 0, 3)
+
+        self.load_button = QPushButton("Load Checkpoint")
+        self.load_button.clicked.connect(self.load_checkpoint)
+        self.button_layout.addWidget(self.load_button, 0, 4)
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.train_step)
+        self.is_training = False
+
+    def train_step(self):
+        loss, accuracy = self.network.train_step(self.train_dataset, self.test_dataset)
+        self.loss_plot.update_plot(loss, accuracy)
+        self.function_plot.update_plot()
+        self.network_plot.update_plot()
+
+    def start_training(self):
+        self.is_training = True
+        self.timer.start(10)
+
+    def stop_training(self):
+        self.is_training = False
+        self.timer.stop()
+
+    def save_checkpoint(self):
+        ckpt_name = f"checkpoint_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.atmn"
+        self.network.save_checkpoint("./checkpoints/" + ckpt_name)
+
+    def load_checkpoint(self):
+        file_path = askopenfilename(defaultextension="checkpoints/*.atmn", filetypes=[("Atman Checkpoint", "*.atmn")])
+        self.network.load_checkpoint(file_path)
+
 def generate_sine_data(num_samples, start, end):
     x = np.linspace(start, end, num_samples)
     y = np.sin(x)
-    # normalize y to be between 0 and 1
     y = (y + 1) / 2
     return np.column_stack((x.reshape(-1, 1), y.reshape(-1, 1)))
 
-# Training dataset: Cover the full range of sine wave
-train_dataset = generate_sine_data(60, 0, 2*np.pi)
-train_dataset = np.expand_dims(train_dataset, axis=2)
+class NetworkPlot(QWidget):
+    def __init__(self, network):
+        super().__init__()
+        self.network  : SpatialNetwork = network
+        self.initUI()
 
-# Test dataset: Include values outside the training range to test generalization
-test_dataset = generate_sine_data(40, 0, 2*np.pi)
-test_dataset = np.expand_dims(test_dataset, axis=2)
+    def initUI(self):
+        self._layout = QVBoxLayout()
+        self.setLayout(self._layout)
 
-# # Normalize the datasets
-# max_val = max(np.max(np.abs(train_dataset)), np.max(np.abs(test_dataset)))
-# train_dataset /= max_val
-# test_dataset /= max_val
+        self.graphics_view = QGraphicsView()
+        self.graphics_scene = QGraphicsScene()
+        self.graphics_view.setScene(self.graphics_scene)
+        self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.graphics_view.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        self._layout.addWidget(self.graphics_view, 1, Qt.AlignmentFlag.AlignCenter)
 
-# Example usage
-print("Network configuration:")
-print(f"Node positions: {node_positions}")
-print(f"Input indices: {input_indices}")
-print(f"Output indices: {output_indices}")
+        self.update_plot()
+                
+    def update_plot(self):
+        self.graphics_scene.clear()
 
-print("\nTraining dataset shape:", train_dataset.shape)
-print("Test dataset shape:", test_dataset.shape)
+        # Draw nodes
+        for neuron in self.network.neurons:
+            neuron_item = QGraphicsEllipseItem(neuron.position[0] - 1, neuron.position[1] - 1, 2, 2)
+            if neuron.is_input:
+                neuron_item.setPen(QPen(Qt.GlobalColor.blue, 0.1))
+            elif neuron.is_output:
+                neuron_item.setPen(QPen(Qt.GlobalColor.green, 0.1))
+            else:
+                neuron_item.setPen(QPen(Qt.GlobalColor.yellow, 0.1))
+            self.graphics_scene.addItem(neuron_item)
 
-# Display a few samples from each dataset
-print("\nSample from training dataset:")
-print(train_dataset[:5])
-print("\nSample from test dataset:")
-print(test_dataset[:5])
-
-# Main plot
-input_nodes = [node_positions[i] for i in input_indices]
-input_plot = ax1.scatter([p[0] for p in input_nodes], [p[1] for p in input_nodes], c='blue', s=50, zorder=2)
-output_nodes = [node_positions[i] for i in output_indices]
-output_plot = ax1.scatter([p[0] for p in output_nodes], [p[1] for p in output_nodes], c='green', s=50, zorder=2)
-neuron_nodes = [node_positions[i] for i in network.hidden_indices]
-neuron_plot = ax1.scatter([p[0] for p in neuron_nodes], [p[1] for p in neuron_nodes], c='orange', s=50, zorder=3)
-lines = []
-
-def add_arrow(line, position=None, direction='right', size=10, color='gray'):
-    if position is None:
-        position = line.get_data()
-    xdata, ydata = position
-    arrowprops = dict(facecolor=color, edgecolor=color, arrowstyle='-|>', mutation_scale=size)
-    return ax1.annotate('', xy=(xdata[1], ydata[1]), xytext=(xdata[0], ydata[0]), arrowprops=arrowprops)
-
-for neuron in network.neurons:
-    for conn in neuron.outgoing_connections:
-        line, = ax1.plot([neuron.position[0], conn.position[0]],
-                         [neuron.position[1], conn.position[1]],
-                         'gray', linewidth=1, zorder=1)
-        add_arrow(line)
-        lines.append(line)
-
-ax1.set_xlim(min([p[0] for p in node_positions]) - 0.5, max([p[0] for p in node_positions]) + 0.5)
-ax1.set_ylim(min([p[1] for p in node_positions]) - 0.5, max([p[1] for p in node_positions]) + 0.5)
-ax1.axis('off')
-for i, neuron in enumerate(network.neurons):
-    # calculate incoming connection distances
-    incoming_distances = []
-    for conn in neuron.incoming_connections:
-        incoming_distances.append(round(float(network.distances[i][conn.index]), 2))
-
-    neuron_label_text = f'N{i}'
-    if show_weights_biases:
-        neuron_label_text += f'\nw={neuron.weights}\nb={neuron.bias}'
-    if show_distances:
-        neuron_label_text += f'\nd={incoming_distances}'
-    if show_activations:
-        acts = [round(float(network.activations[conn.index][i]), 2) for conn in neuron.incoming_connections]
-        neuron_label_text += f'\na={acts}'
-    ax1.text(neuron.position[0]-.1, neuron.position[1]+.1, neuron_label_text, ha='center', va='center')
-
-# Loss plot
-ax2 = axs[1, 0]
-loss_line, = ax2.plot([], [], 'b-')
-ax2.set_xlim(0, 100)
-ax2.set_ylim(0, 0.5)
-ax2.set_xlabel('Iteration')
-ax2.set_ylabel('Loss')
-ax2.grid(True)
-# also show the current loss value
-loss_accuracy_text = ax2.text(0.02, 0.95, '',
-                        verticalalignment='top', horizontalalignment='left', transform=ax2.transAxes)
-
-# Function plot
-ax3 = axs[1, 1]
-ax3.plot(train_dataset[:, 0][:, 0], train_dataset[:, 1][:, 0], label='Training data')
-ax3.set_xlim(-0.5, 2*np.pi + 0.5)
-ax3.set_ylim(-0.5, 1.5)
-
-def update_plot():
-    for annotation in ax1.texts:
-        annotation.remove()
-
-    for i, neuron in enumerate(network.neurons):
-        # calculate incoming connection distances
-        incoming_distances = []
-        for conn in neuron.incoming_connections:
-            incoming_distances.append(round(float(network.distances[i][conn.index]), 2))
-
-        neuron_label_text = f'N{i}'
-        if show_weights_biases:
-            neuron_label_text += f'\nw={neuron.weights}\nb={neuron.bias}'
-        if show_distances:
-            neuron_label_text += f'\nd={incoming_distances}'
-        if show_activations:
-            acts = [round(float(network.activations[conn.index][i]), 2) for conn in neuron.incoming_connections]
-            neuron_label_text += f'\na={acts}'
-        ax1.texts[i].set_position(tuple(neuron.position))
-        ax1.texts[i].set_text(neuron_label_text)
-
-    neuron_plot.set_offsets([n.position for n in network.neurons if n.is_hidden])
-
-    line_index = 0
-    for neuron in network.neurons:
-        for conn in neuron.outgoing_connections:
-            lines[line_index].set_data([neuron.position[0], conn.position[0]], [neuron.position[1], conn.position[1]])
-            add_arrow(lines[line_index])
-            line_index += 1
-
-    plt.draw()
-
-curr_max_loss = 0.3
-def update_loss_plot(loss, accuracy):
-    global curr_max_loss
-    curr_max_loss = max(curr_max_loss, loss)
-    loss_accuracy_text.set_text(f'Iteration: {network.current_iteration}, \nLoss: {loss:.4f}, \nAccuracy: {(accuracy*100):.2f}%')
-    loss_line.set_data(range(len(network.loss_history)), network.loss_history)
-    ax2.set_xlim(0, max(100, len(network.loss_history)))
-    ax2.set_ylim(0, curr_max_loss)
-    plt.draw()
-
-
-def update_function_plot():
-    # plot the predicted sine wave
-    x, y = test_dataset[:, 0][:, 0].copy(), test_dataset[:, 1][:, 0].copy()
-    for i, x_val in enumerate(x):
-        y[i] = network.forward(np.array([[x_val]]))[0]
-        # print(f"Predicted {y[i]:.2f} for {x_val:.2f}, True {np.sin(x_val):.2f}")
-    if len(ax3.lines) > 1:
-        ax3.lines[1].set_data(x, y)
-    else:
-        ax3.plot(x, y, 'r')
-    plt.draw()
-
-# for neuron in network.neurons:
-#     print("Neuron at", neuron.position, "has incoming connections", [conn.position for conn in neuron.incoming_connections])
-#     print("and outgoing connections", [conn.position for conn in neuron.outgoing_connections])
-
-# step_size = len(dataset)
-def on_click(event):
-    # step_size = 1
-    # train_step = train_dataset[network.current_iteration % len(train_dataset) * step_size: (network.current_iteration % len(train_dataset) + 1) * step_size]
-    # test_step = test_dataset[network.current_iteration % len(test_dataset) * step_size: (network.current_iteration % len(test_dataset) + 1) * step_size]
-    loss, accuracy = network.train_step(train_dataset, test_dataset)
-    # plot asynchrously
-
-    plot_update_step = 1
-    if network.current_iteration % plot_update_step == 0:
-        update_loss_plot(loss, accuracy)
-        update_function_plot()
-        if enable_spatial_attention or show_distances or show_distances or show_activations:
-            update_plot()
-
-button_ax = plt.axes((0.8, 0.05, 0.1, 0.075))
-button = Button(button_ax, 'Next Iteration')
-button.on_clicked(on_click)
-
-# play pause training with 100ms interval
-play_button = Button(plt.axes((0.6, 0.05, 0.1, 0.075)), 'Play')
-pause_button = Button(plt.axes((0.4, 0.05, 0.1, 0.075)), 'Pause')
-pause = True
-
-# Buttons to save checkpoints
-save_button = Button(plt.axes((0.2, 0.05, 0.1, 0.075)), 'Save Checkpoint')
-load_button = Button(plt.axes((0, 0.05, 0.1, 0.075)), 'Load Checkpoint')
-
-def on_play(event):
-    print("Playing")
-    global pause
-    pause = False
-    while not pause:
-        on_click(None)
-        plt.pause(0.01)
-
-def on_pause(event):
-    global pause
-    pause = True
+            # calculate incoming connection distances
+            incoming_distances = []
+            for conn in neuron.incoming_connections:
+                incoming_distances.append(round(float(self.network.distances[neuron.index][conn.index]), 2))
     
-def on_save(event):
-    ckpt_name = f"checkpoint_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.atmn"
-    network.save_checkpoint("./checkpoints/" + ckpt_name)
+            neuron_label_text = f'N{neuron.index}'
+            if show_weights_biases:
+                neuron_label_text += f'\nw={neuron.weights}\nb={neuron.bias}'
+            if show_distances:
+                neuron_label_text += f'\nd={incoming_distances}'
+            if show_activations:
+                acts = [round(float(self.network.activations[conn.index][neuron.index]), 2) for conn in neuron.incoming_connections]
+                neuron_label_text += f'\na={acts}'
+                    
+            # Draw neuron labels
+            label_item = QGraphicsTextItem(neuron_label_text)
+            label_item.setFont(QFont("Arial", 1))
+            label_item.setPos(neuron.position[0], neuron.position[1])
+            bounding_rect = label_item.boundingRect()
+            
+            # Center the label around the neuron's position
+            label_item.setPos(neuron.position[0] - bounding_rect.width() / 2, 
+                              neuron.position[1] - bounding_rect.height() / 2 - 1)
+            
+            self.graphics_scene.addItem(label_item)
+
+        # Draw connections
+        for neuron in self.network.neurons:
+            for conn in neuron.outgoing_connections:
+                line_item = QGraphicsLineItem(QLineF(neuron.position[0], neuron.position[1], conn.position[0], conn.position[1]))
+                line_item.setPen(QPen(Qt.GlobalColor.gray, 0.1))
+                self.graphics_scene.addItem(line_item)
+
+                # Add arrow head
+                arrow_length = 2
+                arrow_angle = np.pi / 2.6
+                arrow_end = QPointF(conn.position[0], conn.position[1])
+                arrow_start = QPointF(neuron.position[0], neuron.position[1])
+                arrow_vector = arrow_end - arrow_start
+                np_arrow = np.array([arrow_vector.x(), arrow_vector.y()])
+                np_arrow_normalized = np_arrow / np.linalg.norm(np_arrow)
+                arrow_vector = QPointF(np_arrow_normalized[0], np_arrow_normalized[1])
+                arrow_point1 = arrow_end - arrow_vector * arrow_length * np.cos(arrow_angle) + QPointF(-arrow_vector.y(), arrow_vector.x()) * arrow_length * np.sin(arrow_angle) * 0.1
+                arrow_point2 = arrow_end - arrow_vector * arrow_length * np.cos(arrow_angle) + QPointF(arrow_vector.y(), -arrow_vector.x()) * arrow_length * np.sin(arrow_angle) * 0.1
+                arrow_item = QGraphicsPolygonItem(QPolygonF([arrow_end, arrow_point1, arrow_point2]))
+                arrow_item.setPen(QPen(Qt.GlobalColor.gray, 0.03))
+                arrow_item.setBrush(QBrush(Qt.GlobalColor.gray))
+                self.graphics_scene.addItem(arrow_item)
+
+        self.graphics_scene.setSceneRect(self.graphics_scene.itemsBoundingRect())
+        self.graphics_view.fitInView(self.graphics_scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+class LossPlot(QWidget):
+    def __init__(self, network):
+        super().__init__()
+        self.network : SpatialNetwork = network
+        self.initUI()
+
+    def initUI(self):
+        self._layout = QVBoxLayout()
+        self.setLayout(self._layout)
+
+        self.series = QLineSeries()
+        self.chart = QChart()
+        self.chart.addSeries(self.series)
+        self.chart.createDefaultAxes()
+        legend = self.chart.legend()
+        if legend:
+            legend.hide()
+
+        self.chart_view = QChartView(self.chart)
+        self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._layout.addWidget(self.chart_view)
+
+        self.update_plot(0, 0)
+
+    def update_plot(self, loss, accuracy):
+        self.series.clear()
+        for i, value in enumerate(self.network.loss_history):
+            self.series.append(i, value)
     
-def on_load(event):
-    # select a checkpoint file
-    file_path = askopenfilename(defaultextension="checkpoints/*.atmn", filetypes=[("Atman Checkpoint", "*.atmn")])
-    network.load_checkpoint(file_path)
-
-def on_release(key):
-    if key == keyboard.Key.esc:
-        if pause:
-            on_play(None)
-        else:
-            on_pause(None)
-    elif key == 'q':
-        plt.close()
-    return
-        
-listener = keyboard.Listener(on_release=on_release)
-listener.start()
-
-play_button.on_clicked(on_play)
-pause_button.on_clicked(on_pause)
-save_button.on_clicked(on_save)
-load_button.on_clicked(on_load)
-
-if auto_start_training:
-    on_play(None)
+        # Clear existing text items if needed
+        scene = self.chart.scene()
+        if hasattr(self, 'chart_text_item'):
+            if scene:
+                scene.removeItem(self.chart_text_item)
     
-plt.show()
+        # Create and position the text item
+        text = f"Iteration: {self.network.current_iteration} - Loss: {loss:.4f} - Accuracy: {(accuracy*100):.2f}%"
+        if scene:
+            self.chart_text_item = scene.addText(text)
+            if self.chart_text_item:
+                self.chart_text_item.setFont(QFont("Arial", 12))
+                self.chart_text_item.setPos(30, 160)  # Position at the bottom-left of the chart
+                self.chart_text_item.setDefaultTextColor(QColor(0, 0, 0))
+    
+        # Adjust the axis ranges
+        self.chart.axes(Qt.Orientation.Horizontal)[0].setRange(0, len(self.network.loss_history))
+        self.chart.axes(Qt.Orientation.Vertical)[0].setRange(0, max(0.3, loss))
+    
+        self.chart_view.repaint()
+
+class FunctionPlot(QWidget):
+    def __init__(self, test_dataset, network):
+        super().__init__()
+        self.test_dataset = test_dataset
+        self.network = network
+        self.initUI()
+
+    def initUI(self):
+        self._layout = QVBoxLayout()
+        self.setLayout(self._layout)
+
+        self.true_series = QLineSeries()
+        self.pred_series = QLineSeries()
+        self.true_series.setPen(QPen(Qt.GlobalColor.blue, 1))
+        self.pred_series.setPen(QPen(Qt.GlobalColor.red, 1))
+
+        self.chart = QChart()
+        self.chart.addSeries(self.true_series)
+        self.chart.addSeries(self.pred_series)
+        self.chart.createDefaultAxes()
+        legend = self.chart.legend()
+        if legend:
+            legend.hide()
+
+        self.chart_view = QChartView(self.chart)
+        self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Set layout size
+        self.chart_view.setMinimumSize(300, 200)  # Example size, adjust as needed
+        self._layout.addWidget(self.chart_view)
+        self.update_plot()
+
+    def update_plot(self):
+        self.true_series.clear()
+        self.pred_series.clear()
+
+        x, y = self.test_dataset[:, 0][:, 0].copy(), self.test_dataset[:, 1][:, 0].copy()
+        for i, x_val in enumerate(x):
+            y[i] = self.network.forward(np.array([[x_val]]))[0]
+
+        # True function is a sine wave normalized to the range [0, 2]
+        for x_val in np.linspace(0, 2 * np.pi, len(x)):
+            self.true_series.append(x_val, (np.sin(x_val) + 1) / 2)
+
+        # Add predicted values
+        for i, x_val in enumerate(x):
+            self.pred_series.append(x_val, y[i])
+
+        self.chart.axes(Qt.Orientation.Horizontal)[0].setRange(0, 2 * np.pi)
+        self.chart.axes(Qt.Orientation.Vertical)[0].setRange(-0.5, 1.5)
+
+        self.chart_view.repaint()
+
+
+def main():
+    app = QApplication(sys.argv)
+    window = MainWindow(node_config, input_indices, output_indices)
+    window.show()
+    sys.exit(app.exec())
+
+if __name__ == '__main__':
+    main()

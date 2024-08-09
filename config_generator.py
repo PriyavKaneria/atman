@@ -34,7 +34,7 @@ def generate_config(n_inputs, n_outputs, n_layers, n_nodes_per_layer, scale = 1,
     return node_config
     
 # Example usage
-node_config = generate_config(1, 1, 2, 50, 10, "tanh", "alternate")
+node_config = generate_config(1, 1, 5, 3, 1, "tanh", "alternate")
 parsed_node_config = {}
 for key, value in node_config.items():
     parsed_node_config[str(key)] = value.tolist() if isinstance(value, np.ndarray) else value

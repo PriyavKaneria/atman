@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QTimer, QLineF, QPointF
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPolygonF, QVector2D
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 
-from configs.basic2x5 import node_config, node_positions, input_indices, output_indices
+from configs.basic3x5 import node_config, node_positions, input_indices, output_indices
 
 # for file dialog
 root = tk.Tk()
@@ -28,8 +28,8 @@ show_distances = False
 show_activations = False # show activations of last iteration
 
 # the weights and biases of the network will be generated randomly around this seed
-seed_weights : bool = True
-seed_checkpoint_path = "./checkpoints/checkpoint_2024-08-07_14-50-27.atmn"
+seed_weights : bool = False
+seed_checkpoint_path = "./checkpoints/checkpoint_2024-08-09_23-59-06.atmn"
 seed_weights_bias_global : Any = None
 if seed_weights:
     with open(seed_checkpoint_path, 'rb') as f:
@@ -64,16 +64,18 @@ class SpatialNeuron:
         # self.weights = np.random.randn(len(self.incoming_connections))
         self.weights : np.ndarray = np.ndarray(shape=(len(self.incoming_connections)))
         if self.seed_weights_bias_neuron:
-            self.weights = self.seed_weights_bias_neuron[0][:len(self.incoming_connections)]
-            self.bias = self.seed_weights_bias_neuron[1]
+            self.weights = self.seed_weights_bias_neuron[0][:len(self.incoming_connections)].copy()
+            self.bias = self.seed_weights_bias_neuron[1].copy()
             # add some noise
-            self.weights += np.random.randn(len(self.incoming_connections)) * self.seed_child_mutation * (1 if randint(2) == 0 else -1)
-            self.bias += np.random.randn(1) * self.seed_child_mutation * (1 if randint(2) == 0 else -1)
+            np.random.seed(datetime.now().microsecond + self.index)
+            self.weights += np.random.randn(len(self.incoming_connections)) * self.seed_child_mutation
+            self.bias += np.random.rand() * self.seed_child_mutation
         else:
             for i in range(len(self.incoming_connections)):
                 self.weights[i] = np.random.randn(1)
             self.bias = np.random.randn(1)
-        print("Neuron at", self.position, "has weights", self.weights, "and bias", self.bias)
+        # print("Neuron at", self.position, "has weights", self.weights, "and bias", self.bias)
+        # print("Diff from seed", self.weights - self.seed_weights_bias_neuron[0][:len(self.incoming_connections)], self.bias - self.seed_weights_bias_neuron[1])
 
     def forward(self, inputs, activation=True):
         # print("Forwarding neuron at", self.position, "with inputs", inputs, "and weights", self.weights)
@@ -151,7 +153,6 @@ class SpatialNeuron:
 
 class SpatialNetwork:
     def __init__(self, node_config, input_indices, output_indices, seed_weights_bias : Any = None, seed_child_mutation : float = 0.01):
-        print(seed_weights_bias)
         self.neurons = [SpatialNeuron(ind, pos, activation=node_config[pos], seed_weights_bias_neuron=seed_weights_bias[ind] if seed_weights_bias else None, seed_child_mutation=seed_child_mutation) for ind, pos in enumerate(node_config.keys())]
         self.input_indices = input_indices
         self.output_indices = output_indices
@@ -361,11 +362,11 @@ class SpatialNetwork:
                     gradients[i][key] = gradients[i][key] + grad[key]
 
 
-        class NumpyEncoder(json.JSONEncoder):
-            def default(self, o):
-                if isinstance(o, np.ndarray):
-                    return o.tolist()
-                return super().default(o)
+        # class NumpyEncoder(json.JSONEncoder):
+        #     def default(self, o):
+        #         if isinstance(o, np.ndarray):
+        #             return o.tolist()
+        #         return super().default(o)
         # print(json.dumps(gradients, cls=NumpyEncoder, indent=2))
 
         for x, y_true in test_dataset.copy():
@@ -396,7 +397,7 @@ class SpatialNetwork:
         accuracy = total_correct / len(test_dataset)
         loss_percentage = total_loss / len(test_dataset)
         self.loss_history.append(loss_percentage)
-        if len(self.loss_history) > 500:
+        if len(self.loss_history) > 100:
             self.loss_history.pop(0)
         self.current_iteration += 1
         self.max_accuracy = max(self.max_accuracy, accuracy)
@@ -414,18 +415,21 @@ class SpatialNetwork:
     def get_checkpoint(self):
         return [(neuron.weights, neuron.bias) for neuron in self.neurons]
 
-    def load_checkpoint(self, path):
+    def load_checkpoint(self, path, add_noise=False):
         print(f"Loading checkpoint from {path}")
         with open(path, 'rb') as f:
             loaded_network = pickle.load(f)
         for i, (weights, bias) in enumerate(loaded_network):
             self.neurons[i].weights = weights
             self.neurons[i].bias = bias
+            if add_noise:
+                self.neurons[i].weights += np.random.normal(0, 0.1, self.neurons[i].weights.shape)
+                self.neurons[i].bias += np.random.normal(0, 0.1)
         print("Checkpoint loaded")
         return
 
 class MainWindow(QMainWindow):
-    def __init__(self, node_config, input_indices, output_indices, x_pos=0, y_pos=0, seed_weights_bias=None, seed_child_mutation=0.01, max_iterations = -1, no_children = 1):
+    def __init__(self, node_config, input_indices, output_indices, x_pos=0, y_pos=0, seed_weights_bias=None, seed_child_mutation=0.01, max_iterations = -1, no_children = 1, auto_start = False):
         super().__init__()
         self.setWindowTitle("Spatial Network Visualization")
         self.move(x_pos, y_pos)
@@ -483,31 +487,39 @@ class MainWindow(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.train_step)
         self.is_training = False
+        if auto_start:
+            self.start_training()
 
     def train_step(self):
         for i, network in enumerate(self.child_networks):
             loss, accuracy = self.child_networks[i].train_step(self.train_dataset, self.test_dataset)
-            self.loss_plot.update_plot(i, loss, accuracy)
+            # if self.child_networks[i].current_iteration % 5 == 0:
             self.function_plot.update_plot(i)
-            # self.network_plots[i].update_plot()
+            # if self.child_networks[i].current_iteration % 10 == 0:
+            self.loss_plot.update_plot(i, loss, accuracy)
+                # self.network_plots[i].update_plot()
         if self.child_networks[-1].current_iteration == self.max_iterations:
             self.stop_training()
+            self.close()
 
     def start_training(self):
         self.is_training = True
-        self.timer.start(10)
+        self.timer.start(1)
 
     def stop_training(self):
         self.is_training = False
         self.timer.stop()
 
-    def save_checkpoint(self, child_index):
+    def save_checkpoint(self):
+        # save the checkpoint of highest accuracy
+        child_index = np.argmax([float(network.max_accuracy) for network in self.child_networks])
         ckpt_name = f"checkpoint_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.atmn"
         self.child_networks[child_index].save_checkpoint("./checkpoints/" + ckpt_name)
 
-    def load_checkpoint(self, child_index):
+    def load_checkpoint(self):
         file_path = askopenfilename(defaultextension="checkpoints/*.atmn", filetypes=[("Atman Checkpoint", "*.atmn")])
-        self.child_networks[child_index].load_checkpoint(file_path)
+        for network in self.child_networks:
+            network.load_checkpoint(file_path, add_noise=True)
 
 def generate_sine_data(num_samples, start, end):
     x = np.linspace(start, end, num_samples)
@@ -607,6 +619,8 @@ class LossPlot(QWidget):
         self.child_networks : List[SpatialNetwork] = child_networks
         self.child_network_colors : List[QColor] = child_network_colors
         self.initUI()
+        self.loss_of_max_accuracy = 0
+        self.max_accuracy = 0
 
     def initUI(self):
         self._layout = QVBoxLayout()
@@ -619,6 +633,7 @@ class LossPlot(QWidget):
             series.setPen(self.child_network_colors[i])
             self.chart.addSeries(series)
         self.chart.createDefaultAxes()
+        self.chart.axes(Qt.Orientation.Horizontal)[0].setRange(0, 100)
         legend = self.chart.legend()
         if legend:
             legend.hide()
@@ -626,7 +641,11 @@ class LossPlot(QWidget):
         self.chart_view = QChartView(self.chart)
         self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.chart_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # disable auto range
         self._layout.addWidget(self.chart_view)
+        
+        self.max_accuracy = 0
+        self.loss_of_max_accuracy = 0
 
         for i in range(len(self.child_networks)):
             self.update_plot(i, 0, 0)
@@ -641,14 +660,18 @@ class LossPlot(QWidget):
         if hasattr(self, 'chart_text_item'):
             if scene:
                 scene.removeItem(self.chart_text_item)
+        
+        if accuracy > self.max_accuracy:
+            self.max_accuracy = accuracy
+            self.loss_of_max_accuracy = loss
     
         # Create and position the text item
-        text = f"Iteration: {self.child_networks[child_index].current_iteration} - Loss: {loss:.4f} - Accuracy: {(accuracy*100):.2f}%"
+        text = f"Iteration: {self.child_networks[child_index].current_iteration}  --  Loss corresponding: {self.loss_of_max_accuracy:.4f}  --  Max Accuracy: {(self.max_accuracy*100):.2f}%"
         if scene:
             self.chart_text_item = scene.addText(text)
             if self.chart_text_item:
                 self.chart_text_item.setFont(QFont("Arial", 12))
-                self.chart_text_item.setPos(30, 160)  # Position at the bottom-left of the chart
+                self.chart_text_item.setPos(80, 160)  # Position at the bottom-left of the chart
                 self.chart_text_item.setDefaultTextColor(QColor(0, 0, 0))
     
         # Adjust the axis ranges
@@ -656,6 +679,10 @@ class LossPlot(QWidget):
         self.chart.axes(Qt.Orientation.Vertical)[0].setRange(0, max(0.3, loss))
     
         self.chart_view.repaint()
+        
+        if child_index == len(self.child_networks) - 1:
+            self.max_accuracy = 0
+            self.loss_of_max_accuracy = 0
 
 class FunctionPlot(QWidget):
     def __init__(self, test_dataset, child_networks, child_network_colors):
@@ -714,13 +741,13 @@ class FunctionPlot(QWidget):
         self.chart_view.repaint()
 
 
-def main(no_children = 1, x_pos = 0, y_pos = 0, seed_weights_bias = None, seed_child_mutation = 0.01, max_iterations = -1) -> MainWindow:
+def main(no_children = 1, x_pos = 0, y_pos = 0, seed_weights_bias = None, seed_child_mutation = 0.01, max_iterations = -1, auto_start = False) -> MainWindow:
     app = QApplication(sys.argv)
     # get window position x and y from arguments
-    window = MainWindow(node_config, input_indices, output_indices, x_pos, y_pos, seed_weights_bias, seed_child_mutation, max_iterations, no_children)
+    window = MainWindow(node_config, input_indices, output_indices, x_pos, y_pos, seed_weights_bias, seed_child_mutation, max_iterations, no_children, auto_start)
     window.show()
-    sys.exit(app.exec())
+    app.exec()
     return window
 
 if __name__ == '__main__':
-    main(seed_weights_bias=seed_weights_bias_global)
+    main(seed_weights_bias=seed_weights_bias_global, auto_start=auto_start_training, no_children=15)

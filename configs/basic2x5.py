@@ -1,5 +1,5 @@
 node_config = {
-    (0, 0.5): "relu",      # Input node
+    (0, 0.5): "tanh",      # Input node
 
     # Hidden layer 1 (2 nodes)
     (1, 0.1): "tanh",
@@ -20,7 +20,7 @@ node_config = {
     # Hidden layer 5 (2 nodes)
     (5, 0.1): "tanh",
     (5, 0.9): "tanh",
-
+    
     (6, 0.5): "linear" # Output node
 }
 

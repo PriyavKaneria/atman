@@ -494,9 +494,9 @@ class MainWindow(QMainWindow):
         for i, network in enumerate(self.child_networks):
             loss, accuracy = self.child_networks[i].train_step(self.train_dataset, self.test_dataset)
             # if self.child_networks[i].current_iteration % 5 == 0:
-            self.function_plot.update_plot(i)
+            pruned = self.function_plot.update_plot(i)
             # if self.child_networks[i].current_iteration % 10 == 0:
-            self.loss_plot.update_plot(i, loss, accuracy)
+            self.loss_plot.update_plot(i, loss, accuracy, pruned)
                 # self.network_plots[i].update_plot()
         if self.child_networks[-1].current_iteration == self.max_iterations:
             self.stop_training()
@@ -650,7 +650,11 @@ class LossPlot(QWidget):
         for i in range(len(self.child_networks)):
             self.update_plot(i, 0, 0)
 
-    def update_plot(self, child_index, loss, accuracy):
+    def update_plot(self, child_index, loss, accuracy, pruned=False):
+        if pruned:
+            self.chart.removeSeries(self.child_series[child_index])
+            self.child_series.pop(child_index)
+            return
         self.child_series[child_index].clear()
         for i, value in enumerate(self.child_networks[child_index].loss_history):
             self.child_series[child_index].append(i, value)
@@ -721,7 +725,12 @@ class FunctionPlot(QWidget):
 
     def update_plot(self, child_index):
         self.true_series.clear()
-        self.child_pred_series[child_index].clear()
+        try:
+            self.child_pred_series[child_index].clear()
+        except:
+            print("Error")
+            print(self.child_pred_series)
+            print(child_index, len(self.child_pred_series))
 
         x, y = self.test_dataset[:, 0][:, 0].copy(), self.test_dataset[:, 1][:, 0].copy()
         for i, x_val in enumerate(x):
@@ -739,6 +748,19 @@ class FunctionPlot(QWidget):
         self.chart.axes(Qt.Orientation.Vertical)[0].setRange(-0.5, 1.5)
 
         self.chart_view.repaint()
+        
+        # after every 20 iterations, if the prediction plot is almost a straight line near constant value 0.5, then prune that child
+        if self.child_networks[child_index].current_iteration % 20 == 0:
+            # get the avg difference between 0 and predicted values
+            avg_diff = np.mean(np.abs(y - 0.5))
+            if avg_diff < 0.2:
+                self.chart.removeSeries(self.child_pred_series[child_index])
+                self.child_networks.pop(child_index)
+                self.child_pred_series.pop(child_index)
+                self.child_network_colors.pop(child_index)
+                print(f"Child {child_index} pruned remaining children: {len(self.child_networks)}")
+                return True
+        return False
 
 
 def main(no_children = 1, x_pos = 0, y_pos = 0, seed_weights_bias = None, seed_child_mutation = 0.01, max_iterations = -1, auto_start = False) -> MainWindow:
@@ -750,4 +772,4 @@ def main(no_children = 1, x_pos = 0, y_pos = 0, seed_weights_bias = None, seed_c
     return window
 
 if __name__ == '__main__':
-    main(seed_weights_bias=seed_weights_bias_global, auto_start=auto_start_training, no_children=15)
+    main(seed_weights_bias=seed_weights_bias_global, auto_start=auto_start_training, no_children=5)

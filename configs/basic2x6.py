@@ -31,3 +31,4 @@ node_config = {
 node_positions = list(node_config.keys())
 input_indices = [0]
 output_indices = [len(node_positions) - 1]
+config_name = "basic2x6"

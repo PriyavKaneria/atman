@@ -29,7 +29,7 @@ show_activations = False # show activations of last iteration
 
 # the weights and biases of the network will be generated randomly around this seed
 seed_weights : bool = True
-seed_checkpoint_path = "./checkpoints/checkpoint_basic2x5_2024-08-12_14-39-06.atmn"
+seed_checkpoint_path = "./checkpoints/checkpoint_basic2x5_2024-08-12_15-30-16.atmn"
 seed_weights_bias_global : Any = None
 if seed_weights:
     with open(seed_checkpoint_path, 'rb') as f:
@@ -68,6 +68,7 @@ class SpatialNeuron:
         if self.seed_weights_bias_neuron:
             self.weights = self.seed_weights_bias_neuron[0][:len(self.incoming_connections)].copy()
             self.bias = self.seed_weights_bias_neuron[1].copy()
+            self.position = self.seed_weights_bias_neuron[2].copy()
             # add some noise
             np.random.seed(datetime.now().microsecond + self.index)
             self.weights += np.random.randn(len(self.incoming_connections)) * self.seed_child_mutation
@@ -177,7 +178,7 @@ class SpatialNetwork:
         # activations is a matrix representing activation value sent from ith neuron to jth neuron
         self.activations = np.zeros((len(self.neurons), len(self.neurons)))
         self.learning_rate = 0.0005
-        self.position_learning_rate = 0.8
+        self.position_learning_rate = 2
         self.loss_history = []
         self.distances = np.zeros((len(self.neurons), len(self.neurons)))
         self.max_accuracy = 0
@@ -414,23 +415,24 @@ class SpatialNetwork:
     def save_checkpoint(self, path):
         print(f"Saving checkpoint to {path}")
         with open(path, 'wb') as f:
-            pickle.dump([(neuron.weights, neuron.bias) for neuron in self.neurons], f)
+            pickle.dump([(neuron.weights, neuron.bias, neuron.position) for neuron in self.neurons], f)
             print("Checkpoint saved")
         return
         
     def get_checkpoint(self):
-        return [(neuron.weights, neuron.bias) for neuron in self.neurons]
+        return [(neuron.weights, neuron.bias, neuron.position) for neuron in self.neurons]
 
     def load_checkpoint(self, path, add_noise=False):
         print(f"Loading checkpoint from {path}")
         with open(path, 'rb') as f:
             loaded_network = pickle.load(f)
-        for i, (weights, bias) in enumerate(loaded_network):
+        for i, (weights, bias, position) in enumerate(loaded_network):
             self.neurons[i].weights = weights
             self.neurons[i].bias = bias
+            self.neurons[i].position = position
             if add_noise:
-                self.neurons[i].weights += np.random.normal(0, 0.1, self.neurons[i].weights.shape)
-                self.neurons[i].bias += np.random.normal(0, 0.1)
+                self.neurons[i].weights += np.random.normal(0, 0.05, self.neurons[i].weights.shape)
+                self.neurons[i].bias += np.random.normal(0, 0.05)
         print("Checkpoint loaded")
         return
 
@@ -504,10 +506,10 @@ class MainWindow(QMainWindow):
         self.current_iteration += 1
         for i, network in enumerate(self.child_networks):
             loss, accuracy = self.child_networks[i].train_step(self.train_dataset, self.test_dataset)
-            # if self.child_networks[i].current_iteration % 5 == 0:
+            # pruned in case of 0.5 flat local minima
             pruned = self.function_plot.update_plot(i, self.current_iteration)
-            # if self.child_networks[i].current_iteration % 10 == 0:
-            stop_training = self.loss_plot.update_plot(i, self.current_iteration, loss, accuracy, pruned)
+            # pruned in case of loss increase
+            pruned = self.loss_plot.update_plot(i, self.current_iteration, loss, accuracy, pruned)
             if pruned:
                 # prune
                 self.child_networks.pop(i)
@@ -522,9 +524,6 @@ class MainWindow(QMainWindow):
                 self.loss_plot.add_child(self.child_networks[-1], self.child_network_colors[-1])
                 self.function_plot.add_child(self.child_networks[-1], self.child_network_colors[-1])
             self.network_plots[i].update_plot()
-            if stop_training:
-                self.stop_training()
-                return
         if self.current_iteration == self.max_iterations:
             self.stop_training()
             self.close()
@@ -688,7 +687,7 @@ class LossPlot(QWidget):
         if pruned:
             self.chart.removeSeries(self.child_series[child_index])
             self.child_series.pop(child_index)
-            return
+            return True
         self.child_series[child_index].clear()
         for i, value in enumerate(self.child_networks[child_index].loss_history):
             self.child_series[child_index].append(i, value)
@@ -699,12 +698,12 @@ class LossPlot(QWidget):
             if scene:
                 scene.removeItem(self.chart_text_item)
         
-        if accuracy > self.max_accuracy:
+        if accuracy >= self.max_accuracy:
             self.max_accuracy = accuracy
             self.loss_of_max_accuracy = loss
-            
+        else:
             # stop training if loss starts to increase
-            if iteration > 1 and self.child_networks[child_index].loss_history[-1] - self.child_networks[child_index].loss_history[-2] > 0:
+            if len(self.child_networks[child_index].loss_history) > 1 and self.child_networks[child_index].loss_history[-1] - self.child_networks[child_index].loss_history[-2] > 0:
                 return True
     
         # Create and position the text item

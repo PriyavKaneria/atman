@@ -10,9 +10,10 @@
 - **PyQt6 Integration**: Migrated from Matplotlib to PyQt6 for faster plotting and more responsive multi-threaded performance in training visualizations.
 - **Checkpoints and Pruning**: Automated saving, loading, and pruning of checkpoints for training seeding and optimization.
 
+Below is a demo of multiple children spatial training for sine wave regression problem
 
 
-https://github.com/user-attachments/assets/5e85533e-699d-416d-85f2-573cd3bfde15
+https://github.com/user-attachments/assets/b60ba687-fbbc-474c-8ca4-78a7dff31102
 
 
 

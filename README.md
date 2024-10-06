@@ -46,8 +46,8 @@ All logs, including screenshots and video recordings, are stored in the `/logs` 
 Ensure you have Python 3.8+ and the required dependencies.
 
 ```bash
-git clone https://github.com/yourusername/atmán.git
-cd atmán
+git clone https://github.com/yourusername/atman.git
+cd atman
 pip install -r requirements.txt
 ```
 
